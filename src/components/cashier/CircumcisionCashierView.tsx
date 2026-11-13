@@ -2,12 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { useClinic } from '../../context/ClinicContext';
 import { 
   Receipt, DollarSign, Search, Filter, CreditCard, 
-  CheckCircle2, AlertCircle, Clock, X, ShieldAlert, ArrowDownRight, Sparkles, ExternalLink
+  CheckCircle2, AlertCircle, Clock, X, ShieldAlert, ArrowDownRight, Sparkles, ExternalLink, Printer
 } from 'lucide-react';
 import { Invoice, TransactionItem } from '../../types';
 import { NanoMasterLogo, PrintReceiptIcon, PrintInvoiceIcon } from '../common/PrintIcons';
 import { printElementById, openElementInNewTab } from '../../utils/universalPrintHelper';
 import { hasMenuPermission } from '../../utils/permissionUtils';
+import { DpReceiptPrintModal, DpReceiptData } from './DpReceiptPrintModal';
 
 interface CircumcisionCashierViewProps {
   initialInvoiceId?: number | null;
@@ -28,6 +29,7 @@ export const CircumcisionCashierView: React.FC<CircumcisionCashierViewProps> = (
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
   const [printFormat, setPrintFormat] = useState<'A4' | 'POS'>('A4');
+  const [dpReceiptData, setDpReceiptData] = useState<DpReceiptData | null>(null);
 
   // Payment Form State
   const [paymentAmount, setPaymentAmount] = useState<number>(0);
@@ -105,6 +107,29 @@ export const CircumcisionCashierView: React.FC<CircumcisionCashierViewProps> = (
     setSelectedInvoice(inv);
     setPaymentAmount(inv.remainingAmount);
     setIsPaymentModalOpen(true);
+  };
+
+  const handleOpenDpReceipt = (inv: Invoice) => {
+    const latestDpPayment = inv.payments && inv.payments.length > 0
+      ? inv.payments[inv.payments.length - 1]
+      : undefined;
+    setDpReceiptData({
+      receiptNumber: inv.invoiceNumber,
+      patientName: inv.patientName,
+      rmNumber: inv.rmNumber,
+      date: inv.invoiceDate,
+      packageName: inv.packageName || 'Paket Khitan',
+      packageCategory: inv.categoryCode,
+      subtotal: inv.subtotal,
+      discount: inv.discount,
+      totalAmount: inv.totalAmount,
+      dpAmount: inv.paidAmount,
+      remainingAmount: inv.remainingAmount,
+      paymentMethod: latestDpPayment?.paymentMethod || 'TRANSFER',
+      notes: inv.notes || undefined,
+      branchCode: inv.branchCode || activeBranchCode || 'PUSAT',
+      cashierName: currentUser?.fullName || currentUser?.name || currentUser?.username || 'Kasir / Admin',
+    });
   };
 
   const handleOpenPrint = async (inv: Invoice, format: 'A4' | 'POS' = 'A4') => {
@@ -360,19 +385,29 @@ export const CircumcisionCashierView: React.FC<CircumcisionCashierViewProps> = (
                         {inv.status}
                       </span>
                     </td>
-                    <td className="py-3.5 px-4 text-right space-x-1.5">
-                      {inv.status !== 'PAID' && inv.status !== 'CANCELLED' && (
-                        <button
-                          onClick={() => handleOpenPayment(inv)}
-                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold shadow-xs cursor-pointer inline-flex items-center gap-1 active:scale-95"
-                        >
-                          <CreditCard className="w-3.5 h-3.5" />
-                          <span>Pelunasan</span>
-                        </button>
+                    <td className="py-3.5 px-4 text-right space-x-1.5 whitespace-nowrap">
+                      {inv.status !== 'PAID' && inv.status !== 'CANCELLED' && inv.status !== 'VOID' && (
+                        <>
+                          <button
+                            onClick={() => handleOpenPayment(inv)}
+                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold shadow-xs cursor-pointer inline-flex items-center gap-1 active:scale-95 whitespace-nowrap shrink-0"
+                          >
+                            <CreditCard className="w-3.5 h-3.5" />
+                            <span>Pelunasan</span>
+                          </button>
+                          <button
+                            onClick={() => handleOpenDpReceipt(inv)}
+                            className="px-3 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer active:scale-95 whitespace-nowrap shrink-0"
+                            title="Cetak Kwitansi DP / Nota Sementara (sebelum pelunasan)"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                            <span>Nota DP</span>
+                          </button>
+                        </>
                       )}
                       <button
                         onClick={() => handleOpenPrint(inv, 'A4')}
-                        className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer border border-slate-200 shadow-2xs active:scale-95"
+                        className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer border border-slate-200 shadow-2xs active:scale-95 whitespace-nowrap shrink-0"
                         title="Cetak Invoice Resmi (1 Lembar A4)"
                       >
                         <PrintInvoiceIcon size={14} />
@@ -489,29 +524,40 @@ export const CircumcisionCashierView: React.FC<CircumcisionCashierViewProps> = (
                 </div>
               </div>
 
-              <div className="flex justify-end gap-2.5 px-5 py-3 border-t border-slate-100 bg-slate-50 shrink-0">
+              <div className="flex flex-wrap items-center justify-between gap-2 px-5 py-3 border-t border-slate-100 bg-slate-50 shrink-0">
                 <button
                   type="button"
-                  disabled={isSubmittingPayment}
-                  onClick={() => setIsPaymentModalOpen(false)}
-                  className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold uppercase cursor-pointer disabled:opacity-50"
+                  onClick={() => handleOpenDpReceipt(selectedInvoice)}
+                  className="px-3 py-2 bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 rounded-xl text-xs font-bold uppercase flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                  title="Cetak Kwitansi Pembayaran DP / Nota Sementara"
                 >
-                  Batal
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>Cetak Nota DP</span>
                 </button>
-                <button
-                  type="submit"
-                  disabled={isSubmittingPayment}
-                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-sm cursor-pointer disabled:opacity-60 flex items-center gap-1.5"
-                >
-                  {isSubmittingPayment ? (
-                    <>
-                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      <span>Menyimpan...</span>
-                    </>
-                  ) : (
-                    'Catat Pembayaran'
-                  )}
-                </button>
+                <div className="flex items-center gap-2 ml-auto">
+                  <button
+                    type="button"
+                    disabled={isSubmittingPayment}
+                    onClick={() => setIsPaymentModalOpen(false)}
+                    className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold uppercase cursor-pointer disabled:opacity-50"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingPayment}
+                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-sm cursor-pointer disabled:opacity-60 flex items-center gap-1.5"
+                  >
+                    {isSubmittingPayment ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        <span>Menyimpan...</span>
+                      </>
+                    ) : (
+                      'Catat Pembayaran'
+                    )}
+                  </button>
+                </div>
               </div>
             </form>
           </div>
@@ -1012,6 +1058,12 @@ export const CircumcisionCashierView: React.FC<CircumcisionCashierViewProps> = (
           </div>
         </div>
       )}
+
+      <DpReceiptPrintModal
+        isOpen={Boolean(dpReceiptData)}
+        onClose={() => setDpReceiptData(null)}
+        data={dpReceiptData}
+      />
     </div>
   );
 };

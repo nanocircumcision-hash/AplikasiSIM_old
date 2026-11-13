@@ -41,16 +41,12 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, onNavigate }) =
 
   const isSuperUser = currentUser?.role === 'owner' || currentUser?.role === 'admin' || (currentUser as any)?.branchCode === 'ALL';
 
-  const availableBranches = branches && branches.length > 0 ? branches : [
-    { id: 1, code: 'PUSAT', name: 'Klinik Khitan Pusat', isActive: true },
-    { id: 2, code: 'CABANG-01', name: 'Klinik Khitan Cabang Surabaya', isActive: true },
-    { id: 3, code: 'CABANG-02', name: 'Klinik Khitan Cabang Sidoarjo', isActive: true },
-  ];
+  const availableBranches = (branches || []).filter((b) => b.isActive !== false);
 
   const currentBranch = availableBranches.find(b => b.code.toUpperCase() === (activeBranchCode || 'PUSAT').toUpperCase()) || {
     id: 0,
     code: activeBranchCode || 'PUSAT',
-    name: activeBranchCode === 'PUSAT' ? 'Klinik Khitan Pusat' : (activeBranchCode || 'PUSAT'),
+    name: settings?.clinicName || activeBranchCode || 'PUSAT',
     isActive: true
   };
   const [systemStatus, setSystemStatus] = useState<{

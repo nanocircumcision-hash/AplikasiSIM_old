@@ -126,6 +126,39 @@
     display: none !important;
   }
 
+  /* Isolated DP Receipt / Nota Sementara Print (Portaled directly under body) */
+  body.is-printing-dp-modal > *:not(.dp-print-modal-overlay) {
+    display: none !important;
+  }
+
+  .dp-print-modal-overlay {
+    position: static !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  .dp-print-modal-card {
+    position: static !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    max-height: none !important;
+    height: auto !important;
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
   /* When printing from modal, neutralize fixed overlay backdrops and scrolling constraints */
   .print-modal-overlay {
     position: static !important;
@@ -158,6 +191,7 @@
   #consent-print-document,
   #invoice-print-document,
   #invoice-pos-document,
+  #dp-receipt-print-document,
   #certificate-print-document,
   #payroll-slip-print-document,
   #financial-report-print-document {
@@ -178,6 +212,20 @@
     width: 100% !important;
     max-width: 100% !important;
     overflow: visible !important;
+  }
+
+  .dp-receipt-sheet {
+    background: #ffffff !important;
+    color: #000000 !important;
+    width: 100% !important;
+    margin: 0 auto !important;
+    padding: 4mm 6mm !important;
+    box-sizing: border-box !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
   }
 
   /* Dedicated 1-Page A4 Invoice */

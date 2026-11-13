@@ -254,11 +254,15 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  // Selalu muat profil klinik dan logo manual langsung dari server saat aplikasi pertama kali dibuka
+  // Selalu muat profil klinik, logo manual, dan daftar cabang langsung dari database saat aplikasi pertama kali dibuka
   useEffect(() => {
-    fetch('/api/settings')
-      .then((r) => r.json())
-      .then((setRes) => {
+    let isMounted = true;
+    Promise.all([
+      fetch('/api/settings', { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
+      fetch('/api/branches', { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
+    ])
+      .then(([setRes, branchesRes]) => {
+        if (!isMounted) return;
         if (setRes && (setRes.clinicName || setRes.logoUrl)) {
           const localSavedLogo = typeof window !== 'undefined' ? localStorage.getItem('clinic_logo_url') : null;
           const mergedLogo = setRes.logoUrl || localSavedLogo || null;
@@ -271,8 +275,25 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             localStorage.setItem('clinic_logo_url', mergedLogo);
           }
         }
+        if (Array.isArray(branchesRes) && branchesRes.length > 0) {
+          setBranches(branchesRes);
+          setActiveBranchCodeState((prevCode) => {
+            const matched = branchesRes.find(
+              (b: Branch) => b.code.toUpperCase() === (prevCode || '').toUpperCase()
+            );
+            const resolved = matched ? matched.code : branchesRes[0].code;
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('clinic_active_branch', resolved);
+            }
+            return resolved;
+          });
+        }
       })
-      .catch((err) => console.warn('Failed to load initial settings:', err));
+      .catch((err) => console.warn('Failed to load initial clinic settings & branches:', err));
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const getHeaders = useCallback((branchOverride?: string) => {

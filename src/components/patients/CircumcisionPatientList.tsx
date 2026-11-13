@@ -4,11 +4,12 @@ import {
   Users, Search, Plus, Filter, Phone, MapPin, Heart, ShieldAlert,
   Baby, Calendar, UserPlus, CheckCircle, ChevronRight, Sparkles, X,
   Archive, RotateCcw, Trash2, Eye, ClipboardPaste, FileText, Wand2,
-  Clock, Stethoscope, UserCheck, CheckCircle2, Edit3, Save, AlertCircle, DollarSign
+  Clock, Stethoscope, UserCheck, CheckCircle2, Edit3, Save, AlertCircle, DollarSign, Printer
 } from 'lucide-react';
 import { CircumcisionPatient } from '../../types';
 import { calculateAge, getPatientAgeDisplay } from '../../utils/ageHelper';
 import { parsePatientRegistrationText } from '../../utils/patientTextParser';
+import { DpReceiptPrintModal, DpReceiptData } from '../cashier/DpReceiptPrintModal';
 
 const EXAMPLE_WA_TEXT = `*Silakan diisi form pendaftaran di bawah ini Ayah Bunda :SUNAT NANO*
 
@@ -50,12 +51,13 @@ export const CircumcisionPatientList: React.FC<CircumcisionPatientListProps> = (
   const { 
     patients, guardians, doctors, categories, packages, circumcisionMethods,
     registerPatient, updatePatient, deletePatient, restorePatient, currentUser, employees, bookings,
-    showToast
+    activeBranchCode, showToast
   } = useClinic();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedGuardianFilter, setSelectedGuardianFilter] = useState<string>('ALL');
   const [showArchived, setShowArchived] = useState(false);
   const [isRegisterModalOpen, setIsRegisterModalOpen] = useState(false);
+  const [dpReceiptPreview, setDpReceiptPreview] = useState<DpReceiptData | null>(null);
 
   useEffect(() => {
     if (initialOpenRegisterModal) {
@@ -192,6 +194,32 @@ export const CircumcisionPatientList: React.FC<CircumcisionPatientListProps> = (
   const regNetTotal = Math.max(0, regActivePrice - regDiscount);
   const regDp = Number(formData.dpAmount || 0);
   const regRemaining = Math.max(0, regNetTotal - regDp);
+
+  const handleOpenDpReceiptFromReg = () => {
+    if (!formData.fullName.trim()) {
+      showToast('Silakan isi Nama Lengkap Anak terlebih dahulu untuk mencetak Nota DP', 'info');
+      return;
+    }
+    setDpReceiptPreview({
+      receiptNumber: 'NOTA-DP-PENDAFTARAN',
+      patientName: formData.fullName.trim(),
+      rmNumber: 'Menunggu Penerbitan RM',
+      date: new Date().toISOString().split('T')[0],
+      packageName: formData.plannedMethodType || regSelectedPkg?.name || 'Paket Khitan',
+      packageCategory: formData.plannedPackageCategory || 'REG',
+      subtotal: regActivePrice,
+      discount: regDiscount,
+      totalAmount: regNetTotal,
+      dpAmount: regDp,
+      remainingAmount: regRemaining,
+      paymentMethod: formData.paymentMethod,
+      notes: formData.plannedProcedureDate
+        ? `Rencana Tindakan: ${formData.plannedProcedureDate} (${formData.plannedProcedureTime || '08:00'})`
+        : undefined,
+      branchCode: activeBranchCode || 'PUSAT',
+      cashierName: currentUser?.fullName || currentUser?.name || currentUser?.username || 'Kasir / Admin',
+    });
+  };
 
   // Kalkulasi Biaya Khitan Real-time di Form Edit Pasien (Core Data)
   const editCatId = editFormData.plannedPackageCategory === 'VIP' ? 2 : 1;
@@ -1471,11 +1499,22 @@ export const CircumcisionPatientList: React.FC<CircumcisionPatientListProps> = (
                         </div>
                       </div>
 
-                      <div className="flex justify-between items-center pt-2 border-t border-indigo-200/60 text-xs font-black">
+                      <div className="flex flex-wrap justify-between items-center gap-2 pt-2 border-t border-indigo-200/60 text-xs font-black">
                         <span className="text-slate-700">Sisa Pelunasan di Hari Tindakan:</span>
-                        <span className={`font-mono text-sm px-2.5 py-0.5 rounded-lg ${regRemaining === 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
-                          {regRemaining === 0 ? 'LUNAS (Rp 0)' : formatRupiah(regRemaining)}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className={`font-mono text-sm px-2.5 py-0.5 rounded-lg ${regRemaining === 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                            {regRemaining === 0 ? 'LUNAS (Rp 0)' : formatRupiah(regRemaining)}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleOpenDpReceiptFromReg}
+                            title="Cetak Nota Sementara / Kwitansi Pembayaran DP"
+                            className="px-2.5 py-1 bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 rounded-lg text-[11px] font-bold flex items-center gap-1 cursor-pointer transition-colors whitespace-nowrap shrink-0"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                            <span>Nota DP</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
 
@@ -1597,20 +1636,31 @@ export const CircumcisionPatientList: React.FC<CircumcisionPatientListProps> = (
             </div>
 
             {/* Sticky Action Bar */}
-            <div className="flex items-center justify-end gap-2.5 px-5 py-3 border-t border-slate-100 bg-slate-50 shrink-0">
+            <div className="flex flex-wrap items-center justify-between gap-2.5 px-5 py-3 border-t border-slate-100 bg-slate-50 shrink-0">
               <button
                 type="button"
-                onClick={() => setIsRegisterModalOpen(false)}
-                className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold uppercase tracking-wider cursor-pointer"
+                onClick={handleOpenDpReceiptFromReg}
+                className="px-3.5 py-2 bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 rounded-xl text-xs font-bold uppercase tracking-wider cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                title="Cetak Kwitansi Pembayaran DP / Nota Sementara sebelum pelunasan"
               >
-                Batal
+                <Printer className="w-3.5 h-3.5" />
+                <span>Cetak Nota DP</span>
               </button>
-              <button
-                type="submit"
-                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-sm cursor-pointer"
-              >
-                Simpan Pasien & Terbitkan RM
-              </button>
+              <div className="flex items-center gap-2 ml-auto">
+                <button
+                  type="button"
+                  onClick={() => setIsRegisterModalOpen(false)}
+                  className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold uppercase tracking-wider cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-sm cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  Simpan Pasien &amp; Terbitkan RM
+                </button>
+              </div>
             </div>
           </form>
         </div>
@@ -2643,6 +2693,12 @@ export const CircumcisionPatientList: React.FC<CircumcisionPatientListProps> = (
           </div>
         </div>
       )}
+
+      <DpReceiptPrintModal
+        isOpen={Boolean(dpReceiptPreview)}
+        onClose={() => setDpReceiptPreview(null)}
+        data={dpReceiptPreview}
+      />
     </div>
   );
 };

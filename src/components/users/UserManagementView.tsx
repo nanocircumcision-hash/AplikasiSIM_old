@@ -353,8 +353,7 @@ export const UserManagementView: React.FC = () => {
               className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
             >
               <option value="ALL">Semua Cabang (Global)</option>
-              <option value="PUSAT">Klinik Pusat (PUSAT)</option>
-              {branches?.filter(b => b.code !== 'PUSAT').map((b) => (
+              {branches?.map((b) => (
                 <option key={b.code} value={b.code}>{b.name} ({b.code})</option>
               ))}
             </select>
@@ -452,20 +451,10 @@ export const UserManagementView: React.FC = () => {
                             <Building2 className="w-3 h-3 text-purple-600" />
                             Semua Cabang
                           </span>
-                        ) : userBranch === 'CABANG-01' ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-black bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            <Building2 className="w-3 h-3 text-emerald-600" />
-                            Cabang Surabaya
-                          </span>
-                        ) : userBranch === 'CABANG-02' ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-black bg-amber-50 text-amber-700 border border-amber-200">
-                            <Building2 className="w-3 h-3 text-amber-600" />
-                            Cabang Sidoarjo
-                          </span>
                         ) : (
                           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-black bg-blue-50 text-blue-700 border border-blue-200">
                             <Building2 className="w-3 h-3 text-blue-600" />
-                            Klinik Pusat
+                            {branches?.find(b => b.code.toUpperCase() === userBranch)?.name || userBranch}
                           </span>
                         )}
                       </td>
@@ -722,8 +711,7 @@ export const UserManagementView: React.FC = () => {
                         onChange={(e) => setFormData({ ...formData, branchCode: e.target.value })}
                         className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-sky-500 focus:bg-white font-medium"
                       >
-                        <option value="PUSAT">Klinik Khitan Pusat (PUSAT)</option>
-                        {branches?.filter(b => b.code !== 'PUSAT').map((b) => (
+                        {branches?.map((b) => (
                           <option key={b.code} value={b.code}>{b.name} ({b.code})</option>
                         ))}
                         <option value="ALL">Semua Cabang (Global - Khusus Super Admin / Owner)</option>

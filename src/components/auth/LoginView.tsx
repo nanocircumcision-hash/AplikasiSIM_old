@@ -7,19 +7,18 @@ import {
 import { NanoAppIcon } from '../common/PrintIcons';
 
 export const LoginView: React.FC = () => {
-  const { login, settings, branches } = useClinic();
+  const { login, settings, branches, activeBranchCode } = useClinic();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedBranch, setSelectedBranch] = useState('PUSAT');
+  const [selectedBranch, setSelectedBranch] = useState('');
 
-  const availableBranches = branches && branches.length > 0 ? branches : [
-    { id: 1, code: 'PUSAT', name: 'Klinik Khitan Pusat', isActive: true },
-    { id: 2, code: 'CABANG-01', name: 'Klinik Khitan Cabang Surabaya', isActive: true },
-    { id: 3, code: 'CABANG-02', name: 'Klinik Khitan Cabang Sidoarjo', isActive: true },
-  ];
+  const availableBranches = React.useMemo(
+    () => (branches || []).filter((b) => b.isActive !== false),
+    [branches]
+  );
 
   const [isMigrating, setIsMigrating] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
@@ -30,6 +29,24 @@ export const LoginView: React.FC = () => {
     setPassword('');
     setErrorMsg('');
   }, []);
+
+  // Sinkronkan cabang terpilih langsung dengan daftar cabang aktif dari database
+  useEffect(() => {
+    if (availableBranches.length === 0) return;
+    const matchCurrent = availableBranches.find(
+      (b) => b.code.toUpperCase() === (selectedBranch || '').toUpperCase()
+    );
+    if (matchCurrent) {
+      if (selectedBranch !== matchCurrent.code) {
+        setSelectedBranch(matchCurrent.code);
+      }
+      return;
+    }
+    const matchActive = availableBranches.find(
+      (b) => b.code.toUpperCase() === (activeBranchCode || '').toUpperCase()
+    );
+    setSelectedBranch(matchActive ? matchActive.code : availableBranches[0].code);
+  }, [availableBranches, activeBranchCode, selectedBranch]);
 
   const handleAutoInitDatabase = async () => {
     setIsMigrating(true);
@@ -72,7 +89,8 @@ export const LoginView: React.FC = () => {
     setIsLoading(true);
 
     try {
-      const res = await login(cleanUser, password, selectedBranch);
+      const targetBranch = selectedBranch || availableBranches[0]?.code || 'PUSAT';
+      const res = await login(cleanUser, password, targetBranch);
       if (!res.success) {
         setErrorMsg(res.error || 'Username atau kata sandi tidak sesuai. Akses ditolak.');
       }
@@ -185,13 +203,18 @@ export const LoginView: React.FC = () => {
                     setSelectedBranch(e.target.value);
                     setErrorMsg('');
                   }}
-                  className="w-full pl-10 pr-8 py-2.5 bg-slate-50 hover:bg-slate-100/70 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 focus:bg-white transition-all cursor-pointer"
+                  disabled={availableBranches.length === 0}
+                  className="w-full pl-10 pr-8 py-2.5 bg-slate-50 hover:bg-slate-100/70 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 focus:bg-white transition-all cursor-pointer disabled:opacity-60"
                 >
-                  {availableBranches.map((b) => (
-                    <option key={b.code} value={b.code}>
-                      {b.name} ({b.code})
-                    </option>
-                  ))}
+                  {availableBranches.length === 0 ? (
+                    <option value="">Memuat daftar cabang dari database...</option>
+                  ) : (
+                    availableBranches.map((b) => (
+                      <option key={b.code} value={b.code}>
+                        {b.name} ({b.code})
+                      </option>
+                    ))
+                  )}
                 </select>
               </div>
             </div>
