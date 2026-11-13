@@ -34,10 +34,10 @@ function resolvePort(): number {
     if (!isNaN(parsed) && parsed > 0) return parsed;
   }
   // 2. In AI Studio dev environment, Nginx uses 8080 and dev app must bind to 3000
-  if (process.env.APPLET_ID || process.env.DEFAULT_APP_PORT || process.env.NODE_ENV !== 'production') {
+  if (process.env.APPLET_ID || process.env.DEFAULT_APP_PORT) {
     return parseInt(process.env.DEFAULT_APP_PORT || '3000', 10);
   }
-  // 3. In external production deployments (Render, Railway, etc.), respect PORT env var
+  // 3. In external deployments (Railway, Render, VPS, etc.), always respect PORT env var even if NODE_ENV is unset
   if (process.env.PORT) {
     const parsed = parseInt(process.env.PORT, 10);
     if (!isNaN(parsed) && parsed > 0) return parsed;
@@ -10336,7 +10336,21 @@ app.get('/api/database/migrate-status', async (req, res) => {
 async function startServer() {
   const distPath = path.join(process.cwd(), 'dist');
   const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
-  const isProduction = process.env.NODE_ENV === 'production' && hasDist;
+  const isAiStudioEnv = Boolean(process.env.APPLET_ID || process.env.DEFAULT_APP_PORT);
+  const entryScript = process.argv[1] || '';
+  const isBuiltBundle = entryScript.endsWith('server.cjs') || entryScript.endsWith('server.js');
+  const isCloudHost = Boolean(
+    process.env.RAILWAY_ENVIRONMENT ||
+    process.env.RAILWAY_PROJECT_ID ||
+    process.env.RAILWAY_PUBLIC_DOMAIN ||
+    process.env.RENDER ||
+    process.env.FLY_APP_NAME ||
+    process.env.HEROKU_APP_NAME
+  );
+  const isProduction = hasDist && (
+    process.env.NODE_ENV === 'production' ||
+    (!isAiStudioEnv && (isBuiltBundle || isCloudHost || Boolean(process.env.PORT)))
+  );
 
   let viteMiddleware: any = null;
 
@@ -10353,7 +10367,7 @@ async function startServer() {
       return res.send(`<!doctype html><html lang="id"><head><meta charset="utf-8"><meta http-equiv="refresh" content="1"><title>Memuat Klinik...</title><style>body{background:#090d16;color:#cbd5e1;font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;}.box{padding:2rem;border-radius:1rem;background:#1e293b;border:1px solid #334155;max-width:400px;}.spinner{width:36px;height:36px;border:3px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 1rem;}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="box"><div class="spinner"></div><h3 style="margin:0 0 0.5rem;color:#f8fafc;">Nano Circumcision System</h3><p style="margin:0;font-size:0.875rem;color:#94a3b8;">Menyiapkan modul aplikasi...</p></div></body></html>`);
     });
   } else {
-    console.log(`[Production Server] Menyajikan frontend statis dari folder: ${distPath}`);
+    console.log(`[Production Server] Menyajikan frontend statis dari folder: ${distPath} (PORT=${PORT})`);
     app.use(express.static(distPath, {
       setHeaders: (res, filePath) => {
         if (filePath.endsWith('index.html')) {
@@ -10362,8 +10376,11 @@ async function startServer() {
       }
     }));
     app.get('*', (req, res) => {
+      if (req.path.startsWith('/api')) {
+        return res.status(404).json({ error: 'Endpoint API tidak ditemukan.' });
+      }
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      res.sendFile(path.join(distPath, 'index.html'));
+      return res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
