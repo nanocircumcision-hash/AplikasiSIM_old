@@ -1,4 +1,4 @@
-import { pgTable, serial, text, integer, boolean, timestamp } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, integer, doublePrecision, boolean, timestamp } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
 // 0. Branches / Unit Kerja Cabang Table
@@ -552,7 +552,7 @@ export const payrolls = pgTable('payrolls', {
   closingPatientCount: integer('closing_patient_count').notNull().default(0), // Jumlah closing pasien daftar langsung klinik
   closingFeePerPatient: integer('closing_fee_per_patient').notNull().default(0), // Fee per closing pasien
   closingFeeTotal: integer('closing_fee_total').notNull().default(0), // Total fee closing
-  overtimeHours: integer('overtime_hours').notNull().default(0), // Jam lembur
+  overtimeHours: doublePrecision('overtime_hours').notNull().default(0), // Jam lembur (mendukung pecahan jam mis. 1.5, 2.5)
   overtimeHourlyRate: integer('overtime_hourly_rate').notNull().default(0), // Tarif lembur per jam
   overtimeTotal: integer('overtime_total').notNull().default(0), // Total fee lembur
   bonusAmount: integer('bonus_amount').notNull().default(0),
@@ -564,6 +564,24 @@ export const payrolls = pgTable('payrolls', {
   notes: text('notes'),
   paidAt: timestamp('paid_at'),
   processedBy: text('processed_by').notNull().default('Super Admin'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// 32. Employee Overtimes Table (Catatan Lembur Harian Karyawan)
+export const employeeOvertimes = pgTable('employee_overtimes', {
+  id: serial('id').primaryKey(),
+  employeeId: integer('employee_id').references(() => employees.id).notNull(),
+  employeeName: text('employee_name').notNull(),
+  overtimeDate: text('overtime_date').notNull(), // YYYY-MM-DD
+  periodMonth: text('period_month').notNull(), // YYYY-MM
+  startTime: text('start_time'), // HH:mm
+  endTime: text('end_time'), // HH:mm
+  hours: doublePrecision('hours').notNull().default(0),
+  hourlyRate: integer('hourly_rate').notNull().default(0),
+  totalAmount: integer('total_amount').notNull().default(0),
+  reason: text('reason'),
+  branchCode: text('branch_code').default('PUSAT'),
+  recordedBy: text('recorded_by').notNull().default('Admin'),
   createdAt: timestamp('created_at').defaultNow(),
 });
 

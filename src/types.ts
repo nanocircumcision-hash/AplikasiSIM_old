@@ -454,6 +454,23 @@ export interface PayrollItem {
   feeDetails?: EmployeeFeeTransaction[];
 }
 
+export interface EmployeeOvertime {
+  id: number;
+  employeeId: number;
+  employeeName: string;
+  overtimeDate: string; // YYYY-MM-DD
+  periodMonth: string; // YYYY-MM
+  startTime?: string | null;
+  endTime?: string | null;
+  hours: number;
+  hourlyRate: number;
+  totalAmount: number;
+  reason?: string | null;
+  branchCode?: string;
+  recordedBy: string;
+  createdAt?: string;
+}
+
 export interface DoctorFeeTransaction {
   id: number;
   feeNumber: string;

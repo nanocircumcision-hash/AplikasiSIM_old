@@ -12,7 +12,7 @@ import {
   payments, doctorFeeTransactions, expenseCategories, expenseTransactions, 
   followUps, auditLogs, clinicSettings, users,
   products, packageIncludedItems, stockMovements, transactionItems,
-  employees, employeeFeeRules, employeeFeeTransactions, payrolls
+  employees, employeeFeeRules, employeeFeeTransactions, employeeOvertimes, payrolls
 } from './src/db/schema.ts';
 import { eq, and, or, desc, sql, inArray, notInArray, ilike } from 'drizzle-orm';
 import { 
@@ -1079,6 +1079,32 @@ async function runCompleteSchemaMigration(): Promise<string[]> {
     logs.push('✓ Tabel "doctor_method_fee_rules" siap');
   } catch (err: any) {
     logs.push(`! Tabel "doctor_method_fee_rules": ${err.message}`);
+  }
+
+  // 8a-2. Ensure employee_overtimes table exists & payrolls.overtime_hours supports fractional hours
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS "employee_overtimes" (
+        "id" serial PRIMARY KEY,
+        "employee_id" integer NOT NULL REFERENCES "employees"("id"),
+        "employee_name" text NOT NULL,
+        "overtime_date" text NOT NULL,
+        "period_month" text NOT NULL,
+        "start_time" text,
+        "end_time" text,
+        "hours" double precision NOT NULL DEFAULT 0,
+        "hourly_rate" integer NOT NULL DEFAULT 0,
+        "total_amount" integer NOT NULL DEFAULT 0,
+        "reason" text,
+        "branch_code" text DEFAULT 'PUSAT',
+        "recorded_by" text NOT NULL DEFAULT 'Admin',
+        "created_at" timestamp DEFAULT now()
+      );
+    `);
+    await pool.query(`ALTER TABLE IF EXISTS "payrolls" ALTER COLUMN "overtime_hours" TYPE double precision USING "overtime_hours"::double precision`);
+    logs.push('✓ Tabel "employee_overtimes" & kolom pecahan jam lembur siap');
+  } catch (err: any) {
+    logs.push(`! Tabel "employee_overtimes": ${err.message}`);
   }
 
   // 8b. Ensure columns on doctor_fee_transactions and employee_fee_transactions are NULLABLE where optional (Fix for manual fees & bonuses)
@@ -5208,6 +5234,208 @@ app.get('/api/employee-fees', async (req, res) => {
   }
 });
 
+// ---------------- EMPLOYEE OVERTIMES (INPUT LEMBUR KARYAWAN) ----------------
+
+async function hasOvertimeAdminAuthority(req: AuthRequest): Promise<boolean> {
+  const role = String(req.user?.role || '').toLowerCase();
+  if (role === 'owner' || role === 'admin' || role === 'super_admin' || role === 'super admin') {
+    return true;
+  }
+  try {
+    const uid = req.user?.uid;
+    const email = req.user?.email;
+    const matched = await db.select().from(users).where(
+      or(
+        uid ? eq(users.uid, String(uid)) : sql`false`,
+        email ? eq(users.email, String(email)) : sql`false`
+      )
+    ).limit(1);
+    if (matched.length > 0 && matched[0].permissions) {
+      const perms = JSON.parse(matched[0].permissions);
+      if (Array.isArray(perms) && (perms.includes('payroll') || perms.includes('payroll.manage'))) {
+        return true;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
+async function syncDraftPayrollOvertime(empId: number, periodMonth: string) {
+  try {
+    const existingPayroll = await db.select().from(payrolls)
+      .where(and(eq(payrolls.employeeId, empId), eq(payrolls.periodMonth, periodMonth)));
+    if (existingPayroll.length === 0 || existingPayroll[0].status === 'PAID') return;
+
+    const current = existingPayroll[0];
+    const logs = await db.select().from(employeeOvertimes)
+      .where(and(eq(employeeOvertimes.employeeId, empId), eq(employeeOvertimes.periodMonth, periodMonth)));
+
+    const totalHours = Number(logs.reduce((sum, l) => sum + Number(l.hours || 0), 0).toFixed(2));
+    const totalOtAmount = Math.round(logs.reduce((sum, l) => sum + Number(l.totalAmount || 0), 0));
+    const avgRate = totalHours > 0 ? Math.round(totalOtAmount / totalHours) : current.overtimeHourlyRate;
+    const newNetSalary = Math.max(
+      0,
+      Number(current.basicSalary || 0) +
+      Number(current.patientFeeTotal || 0) +
+      Number(current.closingFeeTotal || 0) +
+      totalOtAmount +
+      Number(current.bonusAmount || 0) -
+      Number(current.deductionAmount || 0)
+    );
+
+    await db.update(payrolls)
+      .set({
+        overtimeHours: totalHours,
+        overtimeHourlyRate: avgRate,
+        overtimeTotal: totalOtAmount,
+        netSalary: newNetSalary,
+      })
+      .where(eq(payrolls.id, current.id));
+  } catch (syncErr) {
+    console.warn('Notice syncing draft payroll overtime:', syncErr);
+  }
+}
+
+app.get('/api/employee-overtimes', async (req, res) => {
+  try {
+    const { month, employeeId } = req.query;
+    let list = await db.select().from(employeeOvertimes).orderBy(desc(employeeOvertimes.overtimeDate), desc(employeeOvertimes.id));
+
+    const branchFilter = getBranchFilter(req);
+    list = filterByBranch(list, branchFilter);
+
+    if (month) {
+      list = list.filter((o) => o.periodMonth === String(month));
+    }
+    if (employeeId && employeeId !== 'ALL') {
+      list = list.filter((o) => o.employeeId === Number(employeeId));
+    }
+
+    res.json(list);
+  } catch (err: any) {
+    console.error('Error fetching employee overtimes:', err);
+    res.status(500).json({ error: 'Gagal mengambil data lembur karyawan' });
+  }
+});
+
+app.post('/api/employee-overtimes', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const authorized = await hasOvertimeAdminAuthority(req);
+    if (!authorized) {
+      return res.status(403).json({
+        error: 'Akses Ditolak: Hanya Owner, Admin, atau petugas berwenang Payroll yang dapat menginput lembur karyawan.',
+      });
+    }
+
+    const { employeeId, overtimeDate, startTime, endTime, hours, hourlyRate, reason } = req.body;
+    const empId = Number(employeeId);
+    if (!empId) {
+      return res.status(400).json({ error: 'Karyawan wajib dipilih' });
+    }
+
+    const empRows = await db.select().from(employees).where(and(eq(employees.id, empId), eq(employees.isDeleted, false)));
+    if (empRows.length === 0) {
+      return res.status(404).json({ error: 'Karyawan tidak ditemukan' });
+    }
+    const emp = empRows[0];
+
+    const cleanDate = String(overtimeDate || new Date().toISOString().split('T')[0]).trim();
+    const periodMonth = cleanDate.slice(0, 7);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
+      return res.status(400).json({ error: 'Format tanggal lembur wajib YYYY-MM-DD' });
+    }
+
+    const parsedHours = Number(hours);
+    if (!Number.isFinite(parsedHours) || parsedHours <= 0) {
+      return res.status(400).json({ error: 'Durasi jam lembur harus lebih dari 0' });
+    }
+
+    const resolvedRate = hourlyRate !== undefined && hourlyRate !== null && hourlyRate !== ''
+      ? Math.max(0, Number(hourlyRate))
+      : Math.max(0, Number(emp.overtimeHourlyRate ?? 0));
+    const totalAmount = Math.round(parsedHours * resolvedRate);
+
+    const inserted = await db.insert(employeeOvertimes).values({
+      employeeId: emp.id,
+      employeeName: emp.name,
+      overtimeDate: cleanDate,
+      periodMonth,
+      startTime: startTime ? String(startTime).trim() : null,
+      endTime: endTime ? String(endTime).trim() : null,
+      hours: Number(parsedHours.toFixed(2)),
+      hourlyRate: resolvedRate,
+      totalAmount,
+      reason: reason ? String(reason).trim() : null,
+      branchCode: emp.branchCode || resolveTargetBranch(req),
+      recordedBy: req.user?.name || req.user?.email || 'Admin',
+    }).returning();
+
+    await syncDraftPayrollOvertime(emp.id, periodMonth);
+
+    await recordAudit(
+      'CREATE_OVERTIME',
+      'EMPLOYEE_OVERTIME',
+      String(inserted[0].id),
+      req.user?.name || req.user?.email || 'Admin',
+      `Input lembur ${emp.name} (${cleanDate}): ${parsedHours} jam @ Rp ${resolvedRate} = Rp ${totalAmount}`
+    );
+
+    res.json(inserted[0]);
+  } catch (err: any) {
+    console.error('Error creating employee overtime:', err);
+    res.status(500).json({ error: 'Gagal menyimpan catatan lembur karyawan' });
+  }
+});
+
+app.delete('/api/employee-overtimes/:id', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const authorized = await hasOvertimeAdminAuthority(req);
+    if (!authorized) {
+      return res.status(403).json({
+        error: 'Akses Ditolak: Hanya Owner, Admin, atau petugas berwenang Payroll yang dapat menghapus catatan lembur.',
+      });
+    }
+
+    const otId = Number(req.params.id);
+    const rows = await db.select().from(employeeOvertimes).where(eq(employeeOvertimes.id, otId));
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Catatan lembur tidak ditemukan' });
+    }
+    const target = rows[0];
+
+    const paidPayroll = await db.select().from(payrolls).where(
+      and(
+        eq(payrolls.employeeId, target.employeeId),
+        eq(payrolls.periodMonth, target.periodMonth),
+        eq(payrolls.status, 'PAID')
+      )
+    );
+    if (paidPayroll.length > 0) {
+      return res.status(400).json({
+        error: `Slip gaji ${target.employeeName} periode ${target.periodMonth} sudah DIBAYARKAN (PAID). Catatan lembur tidak dapat dihapus.`,
+      });
+    }
+
+    await db.delete(employeeOvertimes).where(eq(employeeOvertimes.id, otId));
+    await syncDraftPayrollOvertime(target.employeeId, target.periodMonth);
+
+    await recordAudit(
+      'DELETE_OVERTIME',
+      'EMPLOYEE_OVERTIME',
+      String(otId),
+      req.user?.name || req.user?.email || 'Admin',
+      `Hapus catatan lembur ${target.employeeName} (${target.overtimeDate}: ${target.hours} jam)`
+    );
+
+    res.json({ success: true, message: 'Catatan lembur berhasil dihapus dan draft payroll diperbarui' });
+  } catch (err: any) {
+    console.error('Error deleting employee overtime:', err);
+    res.status(500).json({ error: 'Gagal menghapus catatan lembur' });
+  }
+});
+
 // ---------------- PAYROLL MANAGEMENT (PHASE 2) ----------------
 
 app.get('/api/payrolls', async (req, res) => {
@@ -5349,17 +5577,29 @@ app.post('/api/payrolls/generate', requireAuth, async (req: AuthRequest, res) =>
             : (existing.length > 0 ? (existing[0].closingFeePerPatient ?? 0) : 0));
       const closingFeeTotal = calculatedClosingCount * ratePerClosing;
 
-      // Calculate Fee Lembur (Overtime) per Jam
-      const calculatedOvertimeHours = overtimeHours !== undefined && targetEmployees.length === 1
+      // Calculate Fee Lembur (Overtime) per Jam (Auto-sum daily overtime logs if present)
+      const empOvertimes = await db.select().from(employeeOvertimes).where(
+        and(eq(employeeOvertimes.employeeId, emp.id), eq(employeeOvertimes.periodMonth, cleanPeriod))
+      );
+      const loggedOvertimeHours = Number(empOvertimes.reduce((acc, o) => acc + Number(o.hours || 0), 0).toFixed(2));
+      const loggedOvertimeTotal = Math.round(empOvertimes.reduce((acc, o) => acc + Number(o.totalAmount || 0), 0));
+
+      const hasExplicitOtOverride = overtimeHours !== undefined && targetEmployees.length === 1;
+      const calculatedOvertimeHours = hasExplicitOtOverride
         ? Math.max(0, Number(overtimeHours))
-        : (existing.length > 0 ? (existing[0].overtimeHours || 0) : 0);
+        : (empOvertimes.length > 0
+            ? loggedOvertimeHours
+            : (existing.length > 0 ? Number(existing[0].overtimeHours || 0) : 0));
 
       const ratePerOvertimeHour = overtimeHourlyRate !== undefined && targetEmployees.length === 1
         ? Math.max(0, Number(overtimeHourlyRate))
         : (emp.overtimeHourlyRate !== undefined && emp.overtimeHourlyRate !== null
             ? Number(emp.overtimeHourlyRate)
             : (existing.length > 0 ? (existing[0].overtimeHourlyRate ?? 0) : 0));
-      const overtimeTotal = calculatedOvertimeHours * ratePerOvertimeHour;
+
+      const overtimeTotal = !hasExplicitOtOverride && empOvertimes.length > 0
+        ? loggedOvertimeTotal
+        : Math.round(calculatedOvertimeHours * ratePerOvertimeHour);
 
       // Base salary, bonus, deductions
       const basicSalary = Number(emp.basicSalary || 0);

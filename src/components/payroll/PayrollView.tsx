@@ -17,10 +17,13 @@ export const PayrollView: React.FC = () => {
     payrolls, 
     doctorFees,
     procedures,
+    employeeOvertimes,
     generatePayroll, 
     updatePayroll, 
     deletePayroll, 
     payPayroll, 
+    createEmployeeOvertime,
+    deleteEmployeeOvertime,
     currentUser, 
     settings, 
     employees, 
@@ -29,6 +32,8 @@ export const PayrollView: React.FC = () => {
 
   // Active Tab: DOCTOR (Laporan Payroll Fee Dokter VIP/Reguler) or STAFF (Penggajian Staf & Karyawan)
   const [activePayrollTab, setActivePayrollTab] = useState<'DOCTOR' | 'STAFF'>('DOCTOR');
+  // Sub-view inside STAFF tab: SLIPS (Slip Gaji Bulanan) or OVERTIMES (Catatan & Input Lembur Harian)
+  const [staffSubView, setStaffSubView] = useState<'SLIPS' | 'OVERTIMES'>('SLIPS');
 
   // Selected period (format YYYY-MM)
   const currentMonthStr = new Date().toISOString().slice(0, 7);
@@ -83,6 +88,28 @@ export const PayrollView: React.FC = () => {
   const [deletingPayroll, setDeletingPayroll] = useState<PayrollItem | null>(null);
   const [isDeletingSubmitting, setIsDeletingSubmitting] = useState(false);
 
+  // Overtime Modal State (Input Lembur Harian terintegrasi di Tab Penggajian Staf)
+  const [isOvertimeModalOpen, setIsOvertimeModalOpen] = useState(false);
+  const [isSavingOvertime, setIsSavingOvertime] = useState(false);
+  const [deletingOvertimeId, setDeletingOvertimeId] = useState<number | null>(null);
+  const [overtimeForm, setOvertimeForm] = useState({
+    employeeId: '' as string | number,
+    overtimeDate: new Date().toISOString().split('T')[0],
+    startTime: '',
+    endTime: '',
+    hours: 1,
+    hourlyRate: 0,
+    reason: '',
+  });
+
+  const canManageOvertime = (() => {
+    if (!currentUser) return false;
+    const role = (currentUser.role || '').toLowerCase();
+    if (role === 'owner' || role === 'admin' || role === 'super_admin') return true;
+    const perms = currentUser.permissions || [];
+    return perms.includes('payroll') || perms.includes('payroll.manage');
+  })();
+
   const formatRupiah = (val: number) => {
     return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(val);
   };
@@ -97,6 +124,101 @@ export const PayrollView: React.FC = () => {
 
     return matchesPeriod && matchesStatus && matchesSearch;
   });
+
+  // Filter daily overtimes by period and search query
+  const filteredOvertimes = (employeeOvertimes || []).filter((ot) => {
+    const matchesPeriod = !selectedPeriod || ot.periodMonth === selectedPeriod;
+    const matchesSearch = !searchQuery.trim() ||
+      ot.employeeName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (ot.reason || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      ot.overtimeDate.includes(searchQuery.trim());
+    return matchesPeriod && matchesSearch;
+  });
+
+  const totalPeriodOvertimeHours = Number(
+    filteredOvertimes.reduce((sum, ot) => sum + Number(ot.hours || 0), 0).toFixed(2)
+  );
+  const totalPeriodOvertimeAmount = filteredOvertimes.reduce(
+    (sum, ot) => sum + Number(ot.totalAmount || 0),
+    0
+  );
+
+  // Compute hours automatically from startTime & endTime if both valid
+  const calcHoursFromTimeRange = (start: string, end: string): number | null => {
+    if (!start || !end || !start.includes(':') || !end.includes(':')) return null;
+    const [sh, sm] = start.split(':').map(Number);
+    const [eh, em] = end.split(':').map(Number);
+    if (isNaN(sh) || isNaN(sm) || isNaN(eh) || isNaN(em)) return null;
+    let diffMins = eh * 60 + em - (sh * 60 + sm);
+    if (diffMins <= 0) diffMins += 24 * 60; // Mendukung lembur melewati tengah malam
+    if (diffMins <= 0 || diffMins > 24 * 60) return null;
+    return Number((diffMins / 60).toFixed(2));
+  };
+
+  const handleOpenOvertimeModal = () => {
+    if (!canManageOvertime) {
+      showToast('Hanya Owner, Admin, atau pengguna dengan otoritas Payroll yang dapat menginput lembur.', 'error');
+      return;
+    }
+    const activeEmps = employees.filter((e) => e.isActive && !(e as any).isDeleted);
+    const firstEmp = activeEmps[0] || employees[0];
+    const todayIso = new Date().toISOString().split('T')[0];
+    const defaultDate = selectedPeriod && !todayIso.startsWith(selectedPeriod)
+      ? `${selectedPeriod}-01`
+      : todayIso;
+
+    setOvertimeForm({
+      employeeId: firstEmp ? firstEmp.id : '',
+      overtimeDate: defaultDate,
+      startTime: '',
+      endTime: '',
+      hours: 1,
+      hourlyRate: firstEmp && firstEmp.overtimeHourlyRate !== undefined && firstEmp.overtimeHourlyRate !== null
+        ? Number(firstEmp.overtimeHourlyRate)
+        : 0,
+      reason: '',
+    });
+    setIsOvertimeModalOpen(true);
+  };
+
+  const handleSubmitOvertime = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!overtimeForm.employeeId) {
+      showToast('Pilih karyawan terlebih dahulu', 'error');
+      return;
+    }
+    if (!overtimeForm.hours || Number(overtimeForm.hours) <= 0) {
+      showToast('Durasi jam lembur harus lebih dari 0', 'error');
+      return;
+    }
+    setIsSavingOvertime(true);
+    try {
+      const res = await createEmployeeOvertime({
+        employeeId: Number(overtimeForm.employeeId),
+        overtimeDate: overtimeForm.overtimeDate,
+        startTime: overtimeForm.startTime || undefined,
+        endTime: overtimeForm.endTime || undefined,
+        hours: Number(overtimeForm.hours),
+        hourlyRate: Math.max(0, Number(overtimeForm.hourlyRate || 0)),
+        reason: overtimeForm.reason.trim() || undefined,
+      });
+      if (res.success) {
+        setIsOvertimeModalOpen(false);
+        setStaffSubView('OVERTIMES');
+      }
+    } finally {
+      setIsSavingOvertime(false);
+    }
+  };
+
+  const handleDeleteOvertime = async (id: number) => {
+    setDeletingOvertimeId(id);
+    try {
+      await deleteEmployeeOvertime(id);
+    } finally {
+      setDeletingOvertimeId(null);
+    }
+  };
 
   // 1-Click Quick Generate for all active employees
   const handleQuickGenerateAll = async () => {
@@ -443,10 +565,22 @@ export const PayrollView: React.FC = () => {
             />
           </div>
 
+          {canManageOvertime && (
+            <button
+              type="button"
+              onClick={handleOpenOvertimeModal}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer whitespace-nowrap shrink-0"
+              title="Catat lembur harian karyawan (hanya Admin / Otoritas Payroll)"
+            >
+              <Clock className="w-3.5 h-3.5" />
+              <span>+ Input Lembur</span>
+            </button>
+          )}
+
           <button
             onClick={handleQuickGenerateAll}
             disabled={isGenerating}
-            className="inline-flex items-center gap-2 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+            className="inline-flex items-center gap-2 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer whitespace-nowrap shrink-0"
             title="Kalkulasi otomatis semua karyawan aktif"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isGenerating ? 'animate-spin' : ''}`} />
@@ -455,7 +589,7 @@ export const PayrollView: React.FC = () => {
 
           <button
             onClick={handleOpenGenerateModal}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-orange-500 via-rose-600 to-purple-700 hover:from-orange-600 hover:via-rose-700 hover:to-purple-800 text-white rounded-xl text-xs font-bold shadow-md shadow-orange-500/20 transition-all cursor-pointer"
+            className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-orange-500 via-rose-600 to-purple-700 hover:from-orange-600 hover:via-rose-700 hover:to-purple-800 text-white rounded-xl text-xs font-bold shadow-md shadow-orange-500/20 transition-all cursor-pointer whitespace-nowrap shrink-0"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>+ Buat / Kustomisasi Payroll</span>
@@ -498,16 +632,27 @@ export const PayrollView: React.FC = () => {
           <p className="text-[10px] text-amber-600 mt-0.5">Daftar langsung klinik</p>
         </div>
 
-        <div className="bg-white p-3 sm:p-3.5 rounded-xl border border-slate-200 shadow-xs">
+        <button
+          type="button"
+          onClick={() => setStaffSubView('OVERTIMES')}
+          className="text-left bg-white p-3 sm:p-3.5 rounded-xl border border-slate-200 hover:border-purple-300 shadow-xs transition-colors cursor-pointer"
+          title="Klik untuk melihat & mencatat log lembur harian"
+        >
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Fee Lembur (Jam)</span>
             <div className="w-6 h-6 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center font-bold">
               <Clock className="w-3.5 h-3.5" />
             </div>
           </div>
-          <div className="text-lg sm:text-xl font-black text-purple-700 mt-1">{formatRupiah(totalOvertimeFees)}</div>
-          <p className="text-[10px] text-purple-600 mt-0.5">Akumulasi jam lembur</p>
-        </div>
+          <div className="text-lg sm:text-xl font-black text-purple-700 mt-1 tabular-nums">
+            {formatRupiah(totalOvertimeFees > 0 ? totalOvertimeFees : totalPeriodOvertimeAmount)}
+          </div>
+          <p className="text-[10px] text-purple-600 mt-0.5">
+            {filteredOvertimes.length > 0
+              ? `${filteredOvertimes.length} catatan (${totalPeriodOvertimeHours} jam)`
+              : 'Klik untuk input lembur'}
+          </p>
+        </button>
 
         <div className="bg-white p-3 sm:p-3.5 rounded-xl border border-slate-200 shadow-xs">
           <div className="flex items-center justify-between">
@@ -521,38 +666,70 @@ export const PayrollView: React.FC = () => {
         </div>
       </div>
 
-      {/* Filter & Search Bar */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white p-3 rounded-xl border border-slate-200">
+      {/* Filter, Search & Unified Sub-View Switcher (Slip Gaji vs Catatan Lembur) */}
+      <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 bg-white p-3 rounded-xl border border-slate-200">
+        <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 shrink-0">
+          <button
+            type="button"
+            onClick={() => setStaffSubView('SLIPS')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+              staffSubView === 'SLIPS'
+                ? 'bg-white text-slate-900 shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <FileText className="w-3.5 h-3.5 text-orange-600" />
+            <span>Slip Gaji Bulanan ({filteredPayrolls.length})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setStaffSubView('OVERTIMES')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+              staffSubView === 'OVERTIMES'
+                ? 'bg-white text-purple-900 shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Clock className="w-3.5 h-3.5 text-purple-600" />
+            <span>Catatan Lembur ({filteredOvertimes.length} • {totalPeriodOvertimeHours} Jam)</span>
+          </button>
+        </div>
+
         <div className="relative flex-1">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
-            placeholder="Cari nama karyawan atau nomor payroll..."
+            placeholder={staffSubView === 'SLIPS'
+              ? 'Cari nama karyawan atau nomor payroll...'
+              : 'Cari nama karyawan, tanggal (YYYY-MM-DD), atau keterangan lembur...'}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full pl-9 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-orange-500"
           />
         </div>
 
-        <div className="flex items-center gap-1.5 self-end sm:self-auto">
-          <span className="text-[11px] font-bold text-slate-500 mr-1">Status:</span>
-          {(['ALL', 'DRAFT', 'PAID'] as const).map((st) => (
-            <button
-              key={st}
-              onClick={() => setStatusFilter(st)}
-              className={`text-xs px-3 py-1.5 rounded-xl font-bold transition-colors cursor-pointer ${
-                statusFilter === st
-                  ? 'bg-orange-500 text-white shadow-xs'
-                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              }`}
-            >
-              {st === 'ALL' ? 'Semua' : st}
-            </button>
-          ))}
-        </div>
+        {staffSubView === 'SLIPS' && (
+          <div className="flex items-center gap-1.5 self-end lg:self-auto">
+            <span className="text-[11px] font-bold text-slate-500 mr-1">Status:</span>
+            {(['ALL', 'DRAFT', 'PAID'] as const).map((st) => (
+              <button
+                key={st}
+                onClick={() => setStatusFilter(st)}
+                className={`text-xs px-3 py-1.5 rounded-xl font-bold transition-colors cursor-pointer ${
+                  statusFilter === st
+                    ? 'bg-orange-500 text-white shadow-xs'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {st === 'ALL' ? 'Semua' : st}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* Table */}
+      {staffSubView === 'SLIPS' ? (
+      /* Table Slip Gaji Bulanan */
       <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="p-3 sm:p-3.5 border-b border-slate-200 bg-slate-50/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
           <div>
@@ -560,7 +737,7 @@ export const PayrollView: React.FC = () => {
               Daftar Rekapitulasi Slip Gaji Periode: {selectedPeriod}
             </h3>
             <p className="text-[11px] text-slate-500 mt-0.5">
-              Gaji pokok, komisi asisten tindakan, fee closing pasien langsung, uang lembur, dan bonus karyawan
+              Gaji pokok, komisi asisten tindakan, fee closing pasien langsung, akumulasi uang lembur, dan bonus karyawan
             </p>
           </div>
           <span className="text-xs font-semibold px-2.5 py-0.5 bg-orange-100 text-orange-800 rounded-full">
@@ -625,30 +802,30 @@ export const PayrollView: React.FC = () => {
                       <div className="font-bold text-slate-900 text-xs">{item.employeeName}</div>
                       <div className="text-[10px] text-slate-400">Metode: {item.paymentMethod || 'TRANSFER'}</div>
                     </td>
-                    <td className="py-2.5 px-3 text-right font-medium text-slate-700 text-xs">
+                    <td className="py-2.5 px-3 text-right font-medium text-slate-700 text-xs tabular-nums">
                       {formatRupiah(item.basicSalary)}
                     </td>
                     <td className="py-2.5 px-3 text-right">
-                      <div className="font-bold text-emerald-700 text-xs">{formatRupiah(item.patientFeeTotal || 0)}</div>
+                      <div className="font-bold text-emerald-700 text-xs tabular-nums">{formatRupiah(item.patientFeeTotal || 0)}</div>
                       <div className="text-[10px] text-slate-400">{item.patientCount || 0} pasien khitan</div>
                     </td>
                     <td className="py-2.5 px-3 text-right">
-                      <div className="font-bold text-amber-600 text-xs">{formatRupiah(item.closingFeeTotal || 0)}</div>
+                      <div className="font-bold text-amber-600 text-xs tabular-nums">{formatRupiah(item.closingFeeTotal || 0)}</div>
                       <div className="text-[10px] text-slate-400">
                         {item.closingPatientCount || 0} pasien @ {formatRupiah(item.closingFeePerPatient !== undefined && item.closingFeePerPatient !== null ? item.closingFeePerPatient : 0)}
                       </div>
                     </td>
                     <td className="py-2.5 px-3 text-right">
-                      <div className="font-bold text-purple-700 text-xs">{formatRupiah(item.overtimeTotal || 0)}</div>
+                      <div className="font-bold text-purple-700 text-xs tabular-nums">{formatRupiah(item.overtimeTotal || 0)}</div>
                       <div className="text-[10px] text-slate-400">
                         {item.overtimeHours || 0} jam @ {formatRupiah(item.overtimeHourlyRate !== undefined && item.overtimeHourlyRate !== null ? item.overtimeHourlyRate : 0)}/jam
                       </div>
                     </td>
-                    <td className="py-2.5 px-3 text-right text-xs">
+                    <td className="py-2.5 px-3 text-right text-xs tabular-nums">
                       <div className="text-emerald-700 font-semibold text-[11px]">+{formatRupiah(item.bonusAmount || 0)}</div>
                       <div className="text-rose-600 font-semibold text-[11px]">-{formatRupiah(item.deductionAmount || 0)}</div>
                     </td>
-                    <td className="py-2.5 px-3 text-right font-black text-slate-900 text-xs sm:text-sm">
+                    <td className="py-2.5 px-3 text-right font-black text-slate-900 text-xs sm:text-sm tabular-nums">
                       {formatRupiah(item.netSalary)}
                     </td>
                     <td className="py-2.5 px-3 text-center">
@@ -709,6 +886,123 @@ export const PayrollView: React.FC = () => {
           </table>
         </div>
       </div>
+      ) : (
+      /* Table Catatan & Input Lembur Harian */
+      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+        <div className="p-3.5 border-b border-slate-200 bg-purple-50/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
+          <div>
+            <h3 className="text-xs sm:text-sm font-bold text-purple-950 flex items-center gap-1.5">
+              <Clock className="w-4 h-4 text-purple-600" />
+              <span>Catatan Lembur Harian Karyawan — Periode {selectedPeriod}</span>
+            </h3>
+            <p className="text-[11px] text-slate-600 mt-0.5">
+              Khusus diinput oleh Admin / Owner / Otoritas Payroll. Total jam lembur otomatis terakumulasi ke Slip Gaji karyawan di periode bulan yang sama.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-xs font-bold px-2.5 py-1 bg-purple-100 text-purple-900 rounded-lg font-mono tabular-nums">
+              Total: {totalPeriodOvertimeHours} Jam ({formatRupiah(totalPeriodOvertimeAmount)})
+            </span>
+            {canManageOvertime && (
+              <button
+                type="button"
+                onClick={handleOpenOvertimeModal}
+                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1 cursor-pointer shadow-2xs whitespace-nowrap shrink-0"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Input Lembur</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-50 text-[11px] font-black text-slate-500 uppercase tracking-wider border-b border-slate-200">
+                <th className="py-2.5 px-3">Tanggal &amp; Jam</th>
+                <th className="py-2.5 px-3">Nama Karyawan</th>
+                <th className="py-2.5 px-3 text-right">Durasi</th>
+                <th className="py-2.5 px-3 text-right">Tarif / Jam</th>
+                <th className="py-2.5 px-3 text-right">Total Lembur</th>
+                <th className="py-2.5 px-3">Keterangan / Tugas</th>
+                <th className="py-2.5 px-3">Dicatat Oleh</th>
+                {canManageOvertime && <th className="py-2.5 px-3 text-center">Aksi</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 text-xs">
+              {filteredOvertimes.length === 0 ? (
+                <tr>
+                  <td colSpan={canManageOvertime ? 8 : 7} className="py-10 text-center text-slate-400">
+                    <div className="max-w-md mx-auto space-y-2.5">
+                      <div className="w-10 h-10 rounded-xl bg-purple-100 text-purple-600 flex items-center justify-center mx-auto">
+                        <Clock className="w-5 h-5" />
+                      </div>
+                      <p className="font-bold text-slate-700 text-sm">Belum ada catatan lembur untuk periode {selectedPeriod}.</p>
+                      <p className="text-xs text-slate-500">
+                        Klik tombol &quot;+ Input Lembur&quot; untuk mencatat jam lembur karyawan.
+                      </p>
+                      {canManageOvertime && (
+                        <button
+                          type="button"
+                          onClick={handleOpenOvertimeModal}
+                          className="mt-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Catat Lembur Baru</span>
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                filteredOvertimes.map((ot) => (
+                  <tr key={ot.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="py-2.5 px-3 whitespace-nowrap">
+                      <div className="font-mono font-bold text-slate-900">{ot.overtimeDate}</div>
+                      {(ot.startTime || ot.endTime) && (
+                        <div className="text-[10px] font-mono text-purple-700 font-semibold mt-0.5">
+                          {ot.startTime || '--:--'} - {ot.endTime || '--:--'}
+                        </div>
+                      )}
+                    </td>
+                    <td className="py-2.5 px-3 font-bold text-slate-900">{ot.employeeName}</td>
+                    <td className="py-2.5 px-3 text-right font-mono tabular-nums font-bold text-slate-800">
+                      {ot.hours} Jam
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono tabular-nums text-slate-600">
+                      {formatRupiah(ot.hourlyRate)}
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono tabular-nums font-black text-purple-700">
+                      {formatRupiah(ot.totalAmount)}
+                    </td>
+                    <td className="py-2.5 px-3 text-slate-600 max-w-xs">
+                      {ot.reason || <span className="text-slate-400 italic">-</span>}
+                    </td>
+                    <td className="py-2.5 px-3 text-[11px] text-slate-500 font-medium">
+                      {ot.recordedBy}
+                    </td>
+                    {canManageOvertime && (
+                      <td className="py-2.5 px-3 text-center">
+                        <button
+                          type="button"
+                          disabled={deletingOvertimeId === ot.id}
+                          onClick={() => handleDeleteOvertime(ot.id)}
+                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                          title="Hapus catatan lembur"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      )}
     </>
   )}
 
@@ -762,9 +1056,16 @@ export const PayrollView: React.FC = () => {
                       if (val !== 'ALL') {
                         const found = employees.find(emp => emp.id === Number(val));
                         if (found) {
+                          const empOtHours = Number(
+                            (employeeOvertimes || [])
+                              .filter(ot => ot.employeeId === found.id && ot.periodMonth === generateForm.periodMonth)
+                              .reduce((s, ot) => s + Number(ot.hours || 0), 0)
+                              .toFixed(2)
+                          );
                           setGenerateForm(prev => ({
                             ...prev,
                             closingFeePerPatient: found.closingFeePerPatient !== undefined && found.closingFeePerPatient !== null ? found.closingFeePerPatient : 0,
+                            overtimeHours: empOtHours,
                             overtimeHourlyRate: found.overtimeHourlyRate !== undefined && found.overtimeHourlyRate !== null ? found.overtimeHourlyRate : 0,
                           }));
                         }
@@ -1507,6 +1808,192 @@ export const PayrollView: React.FC = () => {
           </div>
         );
       })()}
+
+      {/* MODAL 6: Input Lembur Harian Karyawan */}
+      {isOvertimeModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-hidden">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[94vh] shadow-2xl border border-slate-100 flex flex-col overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 shrink-0 bg-white">
+              <div>
+                <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-purple-600" />
+                  <span>Input Lembur Karyawan</span>
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Otomatis terakumulasi ke Slip Gaji bulanan karyawan
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsOvertimeModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmitOvertime} className="flex-1 flex flex-col min-h-0 overflow-hidden">
+              <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-3.5 text-xs">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    Pilih Karyawan *
+                  </label>
+                  <select
+                    required
+                    value={overtimeForm.employeeId}
+                    onChange={(e) => {
+                      const empId = Number(e.target.value);
+                      const found = employees.find((emp) => emp.id === empId);
+                      setOvertimeForm((prev) => ({
+                        ...prev,
+                        employeeId: e.target.value,
+                        hourlyRate: found && found.overtimeHourlyRate !== undefined && found.overtimeHourlyRate !== null
+                          ? Number(found.overtimeHourlyRate)
+                          : prev.hourlyRate,
+                      }));
+                    }}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500 cursor-pointer"
+                  >
+                    <option value="">-- Pilih Karyawan --</option>
+                    {employees.filter((e) => !(e as any).isDeleted).map((emp) => (
+                      <option key={emp.id} value={emp.id}>
+                        {emp.name} ({emp.position}) — {formatRupiah(emp.overtimeHourlyRate || 0)}/jam
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    Tanggal Lembur *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={overtimeForm.overtimeDate}
+                    onChange={(e) => setOvertimeForm({ ...overtimeForm, overtimeDate: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      Jam Mulai (Opsional)
+                    </label>
+                    <input
+                      type="time"
+                      value={overtimeForm.startTime}
+                      onChange={(e) => {
+                        const nextStart = e.target.value;
+                        const computed = calcHoursFromTimeRange(nextStart, overtimeForm.endTime);
+                        setOvertimeForm((prev) => ({
+                          ...prev,
+                          startTime: nextStart,
+                          hours: computed !== null ? computed : prev.hours,
+                        }));
+                      }}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      Jam Selesai (Opsional)
+                    </label>
+                    <input
+                      type="time"
+                      value={overtimeForm.endTime}
+                      onChange={(e) => {
+                        const nextEnd = e.target.value;
+                        const computed = calcHoursFromTimeRange(overtimeForm.startTime, nextEnd);
+                        setOvertimeForm((prev) => ({
+                          ...prev,
+                          endTime: nextEnd,
+                          hours: computed !== null ? computed : prev.hours,
+                        }));
+                      }}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      Durasi Lembur (Jam) *
+                    </label>
+                    <input
+                      type="number"
+                      step="0.25"
+                      min="0.25"
+                      required
+                      value={overtimeForm.hours}
+                      onChange={(e) => setOvertimeForm({ ...overtimeForm, hours: Math.max(0, Number(e.target.value)) })}
+                      className="w-full px-3 py-2 bg-white border border-purple-200 rounded-xl font-black text-purple-900 focus:outline-none focus:ring-2 focus:ring-purple-500 tabular-nums"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      Tarif / Jam (Rp) *
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      required
+                      value={overtimeForm.hourlyRate}
+                      onChange={(e) => setOvertimeForm({ ...overtimeForm, hourlyRate: Math.max(0, Number(e.target.value)) })}
+                      className="w-full px-3 py-2 bg-white border border-purple-200 rounded-xl font-black text-purple-900 focus:outline-none focus:ring-2 focus:ring-purple-500 tabular-nums"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    Keterangan / Pekerjaan Lembur
+                  </label>
+                  <input
+                    type="text"
+                    value={overtimeForm.reason}
+                    onChange={(e) => setOvertimeForm({ ...overtimeForm, reason: e.target.value })}
+                    placeholder="Contoh: Tindakan pasien tambahan sore / rekap admin"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div className="p-3 bg-purple-50 rounded-xl border border-purple-200 flex items-center justify-between">
+                  <div>
+                    <span className="text-[11px] font-bold text-purple-900 block">Estimasi Uang Lembur:</span>
+                    <span className="text-[10px] text-purple-700">
+                      Masuk ke periode payroll {overtimeForm.overtimeDate.slice(0, 7)}
+                    </span>
+                  </div>
+                  <span className="text-base font-black text-purple-800 font-mono tabular-nums">
+                    {formatRupiah(Math.round((Number(overtimeForm.hours) || 0) * (Number(overtimeForm.hourlyRate) || 0)))}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2.5 px-5 py-3 border-t border-slate-100 bg-slate-50 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setIsOvertimeModalOpen(false)}
+                  className="px-4 py-2 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingOvertime}
+                  className="px-5 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer inline-flex items-center gap-1.5"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>{isSavingOvertime ? 'Menyimpan...' : 'Simpan Lembur'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

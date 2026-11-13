@@ -22,6 +22,7 @@ import {
   InventorySummary,
   Employee,
   EmployeeFeeTransaction,
+  EmployeeOvertime,
   PayrollItem,
   AuditLog,
   CircumcisionMethod,
@@ -68,6 +69,7 @@ interface ClinicContextType {
   inventorySummary: InventorySummary | null;
   employees: Employee[];
   employeeFees: EmployeeFeeTransaction[];
+  employeeOvertimes: EmployeeOvertime[];
   payrolls: PayrollItem[];
   usersList: User[];
   auditLogs: AuditLog[];
@@ -148,6 +150,8 @@ interface ClinicContextType {
   updatePayroll: (id: number, data: any) => Promise<{ success: boolean; error?: string; payroll?: any }>;
   deletePayroll: (id: number) => Promise<{ success: boolean; error?: string }>;
   payPayroll: (id: number, data?: any) => Promise<{ success: boolean; error?: string }>;
+  createEmployeeOvertime: (data: { employeeId: number; overtimeDate: string; startTime?: string; endTime?: string; hours: number; hourlyRate: number; reason?: string }) => Promise<{ success: boolean; error?: string; overtime?: EmployeeOvertime }>;
+  deleteEmployeeOvertime: (id: number) => Promise<{ success: boolean; error?: string }>;
 
   // User Management Actions
   createUser: (data: any) => Promise<{ success: boolean; error?: string; user?: User }>;
@@ -207,6 +211,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [inventorySummary, setInventorySummary] = useState<InventorySummary | null>(null);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [employeeFees, setEmployeeFees] = useState<EmployeeFeeTransaction[]>([]);
+  const [employeeOvertimes, setEmployeeOvertimes] = useState<EmployeeOvertime[]>([]);
   const [payrolls, setPayrolls] = useState<PayrollItem[]>([]);
   const [usersList, setUsersList] = useState<User[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
@@ -333,7 +338,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         ptsRes, guardsRes, catsRes, pkgsRes, methodsRes, docsRes, bksRes,
         qsRes, procsRes, invsRes, feesRes, docMethodFeesRes, expsRes, expCatsRes,
         dashRes, setRes, prodsRes, pkgItemsRes, invSumRes,
-        empRes, empFeesRes, payRes, usersRes, auditRes, branchesRes
+        empRes, empFeesRes, empOvertimesRes, payRes, usersRes, auditRes, branchesRes
       ] = await Promise.all([
         fetch('/api/patients?includeDeleted=true', { headers }).then(r => r.json()).catch(() => []),
         fetch('/api/guardians', { headers }).then(r => r.json()).catch(() => []),
@@ -356,6 +361,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         fetch('/api/inventory/summary', { headers }).then(r => r.json()).catch(() => null),
         fetch('/api/employees', { headers }).then(r => r.json()).catch(() => []),
         fetch('/api/employee-fees', { headers }).then(r => r.json()).catch(() => []),
+        fetch('/api/employee-overtimes', { headers }).then(r => r.json()).catch(() => []),
         fetch('/api/payrolls', { headers }).then(r => r.json()).catch(() => []),
         fetch('/api/users', { headers }).then(r => r.json()).catch(() => []),
         fetch('/api/audit-logs', { headers }).then(r => r.json()).catch(() => []),
@@ -393,6 +399,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (invSumRes && typeof invSumRes.totalProducts === 'number') setInventorySummary(invSumRes);
       if (Array.isArray(empRes)) setEmployees(empRes);
       if (Array.isArray(empFeesRes)) setEmployeeFees(empFeesRes);
+      if (Array.isArray(empOvertimesRes)) setEmployeeOvertimes(empOvertimesRes);
       if (Array.isArray(payRes)) setPayrolls(payRes);
       if (Array.isArray(usersRes)) setUsersList(usersRes);
       if (Array.isArray(auditRes)) setAuditLogs(auditRes);
@@ -1674,6 +1681,47 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  const createEmployeeOvertime = async (data: { employeeId: number; overtimeDate: string; startTime?: string; endTime?: string; hours: number; hourlyRate: number; reason?: string }) => {
+    try {
+      const res = await fetch('/api/employee-overtimes', {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify(data),
+      });
+      const result = await res.json();
+      if (!res.ok) {
+        showToast(result.error || 'Gagal mencatat lembur karyawan', 'error');
+        return { success: false, error: result.error };
+      }
+      showToast(`Lembur ${result.employeeName} (${result.hours} jam) berhasil dicatat!`, 'success');
+      await refreshAllData();
+      return { success: true, overtime: result };
+    } catch (err: any) {
+      showToast('Terjadi kesalahan koneksi server', 'error');
+      return { success: false, error: err.message };
+    }
+  };
+
+  const deleteEmployeeOvertime = async (id: number) => {
+    try {
+      const res = await fetch(`/api/employee-overtimes/${id}`, {
+        method: 'DELETE',
+        headers: getHeaders(),
+      });
+      const result = await res.json();
+      if (!res.ok) {
+        showToast(result.error || 'Gagal menghapus catatan lembur', 'error');
+        return { success: false, error: result.error };
+      }
+      showToast('Catatan lembur berhasil dihapus', 'info');
+      await refreshAllData();
+      return { success: true };
+    } catch (err: any) {
+      showToast('Terjadi kesalahan koneksi server', 'error');
+      return { success: false, error: err.message };
+    }
+  };
+
   // User Actions
   const createUser = async (data: any) => {
     try {
@@ -1851,6 +1899,7 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         inventorySummary,
         employees,
         employeeFees,
+        employeeOvertimes,
         payrolls,
         usersList,
         auditLogs,
@@ -1914,6 +1963,8 @@ export const ClinicProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         updatePayroll,
         deletePayroll,
         payPayroll,
+        createEmployeeOvertime,
+        deleteEmployeeOvertime,
         createUser,
         updateUser,
         deleteUser,
