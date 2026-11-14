@@ -857,40 +857,40 @@ export const UserManagementView: React.FC = () => {
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                             {categoryMenus.map((menu) => {
                               const isChecked = selectedPermissions.includes(menu.id);
-                              const isFinancialRestricted = menu.id === 'view_revenue_profit';
+                              const isSensitiveRestricted = menu.id === 'view_revenue_profit' || menu.id === 'stock_reduction';
                               return (
                                 <div
                                   key={menu.id}
                                   onClick={() => handleTogglePermission(menu.id)}
                                   className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
                                     isChecked
-                                      ? isFinancialRestricted
+                                      ? isSensitiveRestricted
                                         ? 'bg-amber-50/80 border-amber-400 shadow-xs ring-1 ring-amber-400/50'
                                         : 'bg-sky-50/70 border-sky-400/90 shadow-xs'
-                                      : isFinancialRestricted
+                                      : isSensitiveRestricted
                                       ? 'bg-amber-50/20 border-amber-200 hover:border-amber-300'
                                       : 'bg-white border-slate-200 hover:border-slate-300'
                                   }`}
                                 >
                                   <div className="mt-0.5 shrink-0">
                                     {isChecked ? (
-                                      <CheckSquare className={`w-4 h-4 ${isFinancialRestricted ? 'text-amber-600' : 'text-sky-600'}`} />
+                                      <CheckSquare className={`w-4 h-4 ${isSensitiveRestricted ? 'text-amber-600' : 'text-sky-600'}`} />
                                     ) : (
-                                      <Square className={`w-4 h-4 ${isFinancialRestricted ? 'text-amber-300' : 'text-slate-300'}`} />
+                                      <Square className={`w-4 h-4 ${isSensitiveRestricted ? 'text-amber-300' : 'text-slate-300'}`} />
                                     )}
                                   </div>
                                   <div className="min-w-0 flex-1">
                                     <div
                                       className={`text-xs font-bold leading-tight flex items-center flex-wrap gap-1 ${
                                         isChecked 
-                                          ? isFinancialRestricted ? 'text-amber-950 font-black' : 'text-sky-950' 
+                                          ? isSensitiveRestricted ? 'text-amber-950 font-black' : 'text-sky-950' 
                                           : 'text-slate-800'
                                       }`}
                                     >
                                       <span>{menu.label}</span>
-                                      {isFinancialRestricted && (
+                                      {isSensitiveRestricted && (
                                         <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300">
-                                          Khusus Owner / Izin Terbatas
+                                          {menu.id === 'stock_reduction' ? 'Izin Khusus Kurangi Stok' : 'Khusus Owner / Izin Terbatas'}
                                         </span>
                                       )}
                                     </div>

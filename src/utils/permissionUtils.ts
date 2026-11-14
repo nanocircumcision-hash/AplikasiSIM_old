@@ -71,6 +71,13 @@ export const AVAILABLE_MENU_PERMISSIONS: MenuPermissionItem[] = [
     defaultRoles: ['owner', 'super_admin', 'admin', 'staff', 'doctor'],
   },
   {
+    id: 'stock_reduction',
+    label: 'Pengurangan & Koreksi Stok Obat',
+    category: 'Keuangan',
+    description: 'Izin sensitif untuk mengurangi stok obat/produk manual (Barang Keluar, Rusak, Kadaluwarsa, atau Opname Turun). Khusus Owner & pengguna yang diberi akses.',
+    defaultRoles: ['owner', 'super_admin'],
+  },
+  {
     id: 'product-reports',
     label: 'Laporan Pengeluaran Stok',
     category: 'Keuangan',
@@ -171,11 +178,11 @@ export const MENU_CATEGORIES = [
 ] as const;
 
 export function getDefaultPermissionsForRole(role: UserRole): string[] {
-  if (role === 'owner') {
+  if (role === 'owner' || role === 'super_admin') {
     return ALL_MENU_IDS;
   }
-  if (role === 'super_admin' || role === 'admin') {
-    return ALL_MENU_IDS;
+  if (role === 'admin') {
+    return ALL_MENU_IDS.filter((id) => id !== 'stock_reduction');
   }
   if (role === 'doctor') {
     return ['dashboard', 'patients', 'bookings', 'procedures', 'doctor-fees', 'products'];
@@ -229,12 +236,30 @@ export function canViewRevenueAndProfit(user: User | null): boolean {
   );
 }
 
+export function canReduceStock(user: User | null): boolean {
+  if (!user) return false;
+  const role = (user.role || '').toLowerCase();
+  if (role === 'owner' || role === 'super_admin' || role === 'superadmin' || role === 'master') {
+    return true;
+  }
+  const permissions = user.permissions || [];
+  return (
+    permissions.includes('stock_reduction') ||
+    permissions.includes('products.reduce')
+  );
+}
+
 export function hasMenuPermission(user: User | null, menuId: string): boolean {
   if (!user) return false;
 
   // If checking financial revenue & profit access specifically
   if (menuId === 'view_revenue_profit') {
     return canViewRevenueAndProfit(user);
+  }
+
+  // If checking manual stock reduction access specifically
+  if (menuId === 'stock_reduction') {
+    return canReduceStock(user);
   }
 
   // Super Admin & Owner always have access to branches and core admin modules

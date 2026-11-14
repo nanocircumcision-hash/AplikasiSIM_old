@@ -2886,6 +2886,32 @@ app.post('/api/products/sync-branch-catalog', requireAuth, async (req: AuthReque
   }
 });
 
+async function hasStockReductionAuthority(req: AuthRequest): Promise<boolean> {
+  const role = String(req.user?.role || '').toLowerCase();
+  if (role === 'owner' || role === 'super_admin' || role === 'superadmin' || role === 'master') {
+    return true;
+  }
+  try {
+    const uid = req.user?.uid;
+    const email = req.user?.email;
+    const matched = await db.select().from(users).where(
+      or(
+        uid ? eq(users.uid, String(uid)) : sql`false`,
+        email ? eq(users.email, String(email)) : sql`false`
+      )
+    ).limit(1);
+    if (matched.length > 0 && matched[0].permissions) {
+      const perms = JSON.parse(matched[0].permissions);
+      if (Array.isArray(perms) && (perms.includes('stock_reduction') || perms.includes('products.reduce'))) {
+        return true;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
 // Batch setup / stock update for Celana Sunat Sizes (XS, S, M, L, XL, XXL)
 app.post('/api/products/batch-celana-sizes', requireAuth, async (req: AuthRequest, res) => {
   try {
@@ -2909,6 +2935,38 @@ app.post('/api/products/batch-celana-sizes', requireAuth, async (req: AuthReques
     const branchFilter = getBranchFilter(req);
     const targetBranch = resolveTargetBranch(req, req.body.branchCode || (branchFilter !== 'ALL' ? branchFilter : 'PUSAT'));
     const allProducts = await db.select().from(products);
+
+    // Pre-check: if any size reduces stock below existing stock, enforce stock_reduction authority
+    let hasReduction = false;
+    for (const s of sizesList) {
+      const sizeKey = String(s.size).toUpperCase().trim();
+      const branchSku = targetBranch === 'PUSAT' ? `PRD-CLN-${sizeKey}` : `PRD-CLN-${targetBranch}-${sizeKey}`;
+      const targetStock = Math.max(0, Number(s.stock || 0));
+      const existingMatches = allProducts.filter(p => {
+        const itemBranch = (p.branchCode || 'PUSAT').toUpperCase();
+        if (itemBranch !== targetBranch.toUpperCase()) return false;
+        if (p.sku?.toUpperCase() === branchSku.toUpperCase() || p.sku?.toUpperCase() === `PRD-CLN-${sizeKey}`) return true;
+        const isCelana = p.category === 'CELANA_SUNAT' || p.category === 'CELANA' || (p.name || '').toLowerCase().includes('celana');
+        if (!isCelana) return false;
+        const meta = parseProductMetadata(p);
+        if (meta.size?.toUpperCase() === sizeKey) return true;
+        if (p.sku?.toUpperCase().endsWith(`-${sizeKey}`)) return true;
+        if (p.name?.toUpperCase().includes(`(${sizeKey})`)) return true;
+        return false;
+      });
+      if (existingMatches.length > 0 && targetStock < existingMatches[0].stock) {
+        hasReduction = true;
+        break;
+      }
+    }
+    if (hasReduction) {
+      const authorized = await hasStockReductionAuthority(req);
+      if (!authorized) {
+        return res.status(403).json({
+          error: 'Akses Ditolak: Anda tidak memiliki izin pengurangan stok. Aktifkan izin "Pengurangan & Koreksi Stok Obat" di Manajemen Pengguna.',
+        });
+      }
+    }
 
     for (const s of sizesList) {
       const sizeKey = String(s.size).toUpperCase().trim();
@@ -3274,7 +3332,11 @@ app.post('/api/products/:id/adjust-stock', requireAuth, async (req: AuthRequest,
     const { movementType, quantity, notes, referenceType } = req.body;
     // movementType: 'IN' | 'OUT' | 'ADJUSTMENT'
     const qty = Number(quantity);
-    if (!qty || qty <= 0) {
+    if (movementType === 'ADJUSTMENT') {
+      if (isNaN(qty) || qty < 0) {
+        return res.status(400).json({ error: 'Jumlah opname fisik tidak boleh negatif' });
+      }
+    } else if (!qty || qty <= 0) {
       return res.status(400).json({ error: 'Jumlah penyesuaian harus lebih dari 0' });
     }
 
@@ -3285,6 +3347,16 @@ app.post('/api/products/:id/adjust-stock', requireAuth, async (req: AuthRequest,
     const prevStock = product.stock;
     let newStock = prevStock;
     let loggedQty = qty;
+
+    // Enforce restricted permission for any manual stock reduction (OUT or downward ADJUSTMENT)
+    if (movementType === 'OUT' || (movementType === 'ADJUSTMENT' && qty < prevStock)) {
+      const authorized = await hasStockReductionAuthority(req);
+      if (!authorized) {
+        return res.status(403).json({
+          error: 'Akses Ditolak: Anda tidak memiliki izin pengurangan stok obat. Hubungi Owner untuk mengaktifkan izin "Pengurangan & Koreksi Stok Obat".',
+        });
+      }
+    }
 
     if (movementType === 'IN') {
       newStock = prevStock + qty;
@@ -3317,7 +3389,7 @@ app.post('/api/products/:id/adjust-stock', requireAuth, async (req: AuthRequest,
       currentStock: newStock,
       unitCost: product.costPrice,
       unitPrice: product.sellPrice,
-      referenceType: referenceType || (movementType === 'IN' ? 'RESTOCK' : 'ADJUSTMENT'),
+      referenceType: referenceType || (movementType === 'IN' ? 'RESTOCK' : movementType === 'OUT' ? 'MANUAL_OUT' : 'ADJUSTMENT'),
       notes: notes || `Mutasi ${movementType} manual oleh ${req.user?.name || 'Staff'}`,
       performedBy: req.user?.name || 'Staff',
     }).returning();

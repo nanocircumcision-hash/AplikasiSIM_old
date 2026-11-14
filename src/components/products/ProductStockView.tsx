@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useClinic } from '../../context/ClinicContext';
 import { Product, ProductCategory, StockMovement, CelanaSize, DrugType, DrugClassification } from '../../types';
+import { canReduceStock } from '../../utils/permissionUtils';
 import {
   Package,
   Plus,
+  MinusCircle,
+  Lock,
   ArrowDownRight,
   ArrowUpRight,
   RefreshCw,
@@ -113,6 +116,8 @@ export const ProductStockView: React.FC<ProductStockViewProps> = ({ onNavigate }
   // Strict Security: Only Owner and Super Admin can edit product prices
   const userRole = (currentUser?.role || '').toLowerCase();
   const isOwnerOrSuper = userRole === 'owner' || userRole === 'super_admin' || userRole === 'superadmin';
+  // Restricted Permission: Only Owner, Super Admin, or users explicitly granted 'stock_reduction' can reduce stock
+  const canReduceStockAccess = canReduceStock(currentUser);
 
   // Quick Restock (+ Tambah Stok Obat) Modal State (Bisa diakses Staff & Admin)
   const [isQuickRestockModalOpen, setIsQuickRestockModalOpen] = useState(false);
@@ -122,6 +127,16 @@ export const ProductStockView: React.FC<ProductStockViewProps> = ({ onNavigate }
     notes: 'Penerimaan stok obat / alkes baru dari supplier',
   });
   const [isSubmittingQuickRestock, setIsSubmittingQuickRestock] = useState(false);
+
+  // Quick Stock Reduction (- Kurangi Stok Obat) Modal State (Khusus pengguna yang diberi akses)
+  const [isQuickReduceModalOpen, setIsQuickReduceModalOpen] = useState(false);
+  const [quickReduceData, setQuickReduceData] = useState({
+    productId: '',
+    quantity: 1,
+    reasonType: 'EXPIRED' as 'EXPIRED' | 'DAMAGED' | 'INTERNAL_USE' | 'OPNAME_MINUS' | 'OTHER',
+    notes: '',
+  });
+  const [isSubmittingQuickReduce, setIsSubmittingQuickReduce] = useState(false);
 
   // Celana Batch Modal State
   const [isCelanaBatchModalOpen, setIsCelanaBatchModalOpen] = useState(false);
@@ -254,6 +269,23 @@ export const ProductStockView: React.FC<ProductStockViewProps> = ({ onNavigate }
 
   const handleSaveCelanaBatch = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canReduceStockAccess) {
+      for (const size of ['XS', 'S', 'M', 'L', 'XL', 'XXL'] as CelanaSize[]) {
+        const prod = products.find((p) => {
+          if (p.category !== 'CELANA_SUNAT') return false;
+          if (p.size === size) return true;
+          if (p.sku?.toUpperCase().endsWith(`-${size}`)) return true;
+          if (p.name?.toUpperCase().includes(`(${size})`)) return true;
+          return false;
+        });
+        const prevStock = prod?.stock ?? 0;
+        const targetQty = Number(celanaBatchStocks[size] || 0);
+        if (targetQty < prevStock) {
+          showToast(`Akses Ditolak: Pengurangan stok ukuran ${size} (${prevStock} → ${targetQty}) memerlukan izin "Pengurangan & Koreksi Stok Obat".`, 'error');
+          return;
+        }
+      }
+    }
     try {
       setIsSavingBatch(true);
       const sizesArray = (['XS', 'S', 'M', 'L', 'XL', 'XXL'] as CelanaSize[]).map((sz) => ({
@@ -431,8 +463,22 @@ export const ProductStockView: React.FC<ProductStockViewProps> = ({ onNavigate }
   const handleSubmitAdjustment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!adjustingProduct) return;
-    if (adjustmentData.quantity <= 0) {
+    if (adjustmentData.movementType === 'ADJUSTMENT') {
+      if (adjustmentData.quantity < 0) {
+        showToast('Stok opname fisik tidak boleh negatif', 'error');
+        return;
+      }
+    } else if (adjustmentData.quantity <= 0) {
       showToast('Jumlah mutasi harus lebih dari 0', 'error');
+      return;
+    }
+
+    if (
+      !canReduceStockAccess &&
+      (adjustmentData.movementType === 'OUT' ||
+        (adjustmentData.movementType === 'ADJUSTMENT' && adjustmentData.quantity < adjustingProduct.stock))
+    ) {
+      showToast('Akses Ditolak: Pengurangan stok hanya dapat dilakukan oleh pengguna yang diberi izin "Pengurangan & Koreksi Stok Obat".', 'error');
       return;
     }
 
@@ -475,6 +521,77 @@ export const ProductStockView: React.FC<ProductStockViewProps> = ({ onNavigate }
       }
     } finally {
       setIsSubmittingQuickRestock(false);
+    }
+  };
+
+  const handleOpenQuickReduceModal = (preselectedProduct?: Product) => {
+    if (!canReduceStockAccess) {
+      showToast('Akses Ditolak: Fitur pengurangan stok hanya tersedia bagi pengguna yang diberi izin khusus.', 'error');
+      return;
+    }
+    const defaultProd =
+      preselectedProduct ||
+      products.find((p) => (p.category === 'OBAT' || p.category === 'OBAT_TETES') && p.stock > 0) ||
+      products.find((p) => p.stock > 0) ||
+      products[0];
+
+    setQuickReduceData({
+      productId: defaultProd?.id ? String(defaultProd.id) : '',
+      quantity: 1,
+      reasonType: 'EXPIRED',
+      notes: '',
+    });
+    setIsQuickReduceModalOpen(true);
+  };
+
+  const handleQuickReduceSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canReduceStockAccess) {
+      showToast('Akses Ditolak: Anda tidak memiliki izin pengurangan stok.', 'error');
+      return;
+    }
+    const targetProd = products.find((p) => String(p.id) === String(quickReduceData.productId));
+    if (!targetProd) {
+      showToast('Pilih obat atau produk yang ingin dikurangi stoknya', 'error');
+      return;
+    }
+    const qty = Number(quickReduceData.quantity);
+    if (!qty || qty <= 0) {
+      showToast('Jumlah pengurangan stok harus lebih dari 0', 'error');
+      return;
+    }
+    if (qty > targetProd.stock) {
+      showToast(`Jumlah pengurangan (${qty}) melebihi stok tersedia (${targetProd.stock} ${targetProd.unit})`, 'error');
+      return;
+    }
+    if (!quickReduceData.notes.trim()) {
+      showToast('Alasan / catatan pengurangan stok wajib diisi untuk audit trail', 'error');
+      return;
+    }
+
+    const reasonLabelMap: Record<string, string> = {
+      EXPIRED: 'Obat Kadaluwarsa',
+      DAMAGED: 'Kemasan Rusak / Pecah',
+      INTERNAL_USE: 'Pemakaian Internal / Non-Pasien',
+      OPNAME_MINUS: 'Selisih Opname Fisik (Kurang)',
+      OTHER: 'Pengurangan Stok Lainnya',
+    };
+    const prefix = reasonLabelMap[quickReduceData.reasonType] || 'Pengurangan Stok';
+
+    try {
+      setIsSubmittingQuickReduce(true);
+      const res = await adjustStock(targetProd.id, {
+        movementType: 'OUT',
+        quantity: qty,
+        referenceType: quickReduceData.reasonType,
+        notes: `[${prefix}] ${quickReduceData.notes.trim()}`,
+      });
+      if (res.success) {
+        setIsQuickReduceModalOpen(false);
+        await refreshAllData();
+      }
+    } finally {
+      setIsSubmittingQuickReduce(false);
     }
   };
 
@@ -528,12 +645,26 @@ export const ProductStockView: React.FC<ProductStockViewProps> = ({ onNavigate }
             id="btn-quick-add-stock"
             type="button"
             onClick={handleOpenQuickRestockModal}
-            className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center gap-2 transition-all shadow-xs active:scale-95 cursor-pointer"
+            className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center gap-2 transition-all shadow-xs active:scale-95 cursor-pointer whitespace-nowrap shrink-0"
             title="Tambah stok fisik obat & barang (Barang Masuk / Restock)"
           >
             <Boxes className="w-4 h-4 text-emerald-100" />
             <span>+ Tambah Stok Obat (Restock)</span>
           </button>
+
+          {/* Tombol Cepat Kurangi Stok Obat (Hanya Pengguna Dengan Izin Pengurangan Stok) */}
+          {canReduceStockAccess && (
+            <button
+              id="btn-quick-reduce-stock"
+              type="button"
+              onClick={() => handleOpenQuickReduceModal()}
+              className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold text-xs flex items-center gap-2 transition-all shadow-xs active:scale-95 cursor-pointer whitespace-nowrap shrink-0"
+              title="Kurangi stok fisik obat/produk (Kadaluwarsa, Rusak, Opname Turun) — Khusus Izin Terbatas"
+            >
+              <MinusCircle className="w-4 h-4 text-rose-100" />
+              <span>- Kurangi Stok Obat</span>
+            </button>
+          )}
 
           {/* Tombol Khusus: Atur Stok Varian Celana Sunat (XS - XL) */}
           <button
@@ -1005,16 +1136,29 @@ export const ProductStockView: React.FC<ProductStockViewProps> = ({ onNavigate }
                           <button
                             id={`btn-mutate-${p.id}`}
                             onClick={() => handleOpenAdjustmentModal(p)}
-                            className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-[11px] font-black flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
+                            className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-[11px] font-black flex items-center gap-1 transition-all active:scale-95 cursor-pointer whitespace-nowrap shrink-0"
                             title="Tambah Stok Masuk / Penyesuaian Fisik"
                           >
                             <Plus className="w-3 h-3 text-emerald-700" />
                             <span>+ Stok</span>
                           </button>
+                          {canReduceStockAccess && (
+                            <button
+                              id={`btn-reduce-${p.id}`}
+                              type="button"
+                              disabled={p.stock <= 0}
+                              onClick={() => handleOpenQuickReduceModal(p)}
+                              className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 disabled:opacity-40 disabled:cursor-not-allowed text-rose-800 border border-rose-200 rounded-lg text-[11px] font-black flex items-center gap-1 transition-all active:scale-95 cursor-pointer whitespace-nowrap shrink-0"
+                              title={p.stock <= 0 ? 'Stok sudah 0' : 'Kurangi stok produk/obat ini (Khusus Izin Pengurangan Stok)'}
+                            >
+                              <MinusCircle className="w-3 h-3 text-rose-700" />
+                              <span>Kurangi</span>
+                            </button>
+                          )}
                           <button
                             id={`btn-edit-${p.id}`}
                             onClick={() => handleOpenEditModal(p)}
-                            className="p-1.5 text-slate-500 hover:text-sky-700 hover:bg-sky-50 rounded-lg transition-all cursor-pointer"
+                            className="p-1.5 text-slate-500 hover:text-sky-700 hover:bg-sky-50 rounded-lg transition-all cursor-pointer shrink-0"
                             title={isOwnerOrSuper ? 'Edit Data Produk & Harga (Owner/Super)' : 'Edit Info Produk (Harga Terkunci)'}
                           >
                             <Edit2 className="w-3.5 h-3.5" />
@@ -1052,10 +1196,25 @@ export const ProductStockView: React.FC<ProductStockViewProps> = ({ onNavigate }
                 Atur atau sesuaikan jumlah stok fisik untuk setiap ukuran celana sunat. Data ini terintegrasi langsung saat dokter/perawat memilih ukuran di ruang tindakan.
               </p>
 
+              {!canReduceStockAccess && (
+                <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-900 flex items-center gap-2">
+                  <Lock className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                  <span>Anda hanya dapat menambah stok. Pengurangan stok terkunci untuk akun yang diberi izin khusus.</span>
+                </div>
+              )}
+
               <div className="space-y-3">
                 {(['XS', 'S', 'M', 'L', 'XL', 'XXL'] as CelanaSize[]).map((size, idx) => {
                   const info = CELANA_SIZE_INFO[size];
                   const currentQty = celanaBatchStocks[size] ?? 0;
+                  const existingProd = products.find((p) => {
+                    if (p.category !== 'CELANA_SUNAT') return false;
+                    if (p.size === size) return true;
+                    if (p.sku?.toUpperCase().endsWith(`-${size}`)) return true;
+                    if (p.name?.toUpperCase().includes(`(${size})`)) return true;
+                    return false;
+                  });
+                  const minAllowedQty = canReduceStockAccess ? 0 : (existingProd?.stock ?? 0);
 
                   return (
                     <div
@@ -1079,25 +1238,29 @@ export const ProductStockView: React.FC<ProductStockViewProps> = ({ onNavigate }
                         <div className="flex items-center gap-1">
                           <button
                             type="button"
+                            disabled={!canReduceStockAccess}
                             onClick={() =>
                               setCelanaBatchStocks((prev) => ({
                                 ...prev,
-                                [size]: Math.max(0, (prev[size] || 0) - 5),
+                                [size]: Math.max(minAllowedQty, (prev[size] || 0) - 5),
                               }))
                             }
-                            className="px-1.5 py-0.5 text-[10px] font-bold bg-white border border-slate-200 rounded hover:bg-slate-100 text-slate-700 cursor-pointer"
+                            className="px-1.5 py-0.5 text-[10px] font-bold bg-white border border-slate-200 rounded hover:bg-slate-100 text-slate-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                            title={!canReduceStockAccess ? 'Terkunci: Butuh izin Pengurangan Stok' : 'Kurangi 5'}
                           >
                             -5
                           </button>
                           <button
                             type="button"
+                            disabled={!canReduceStockAccess}
                             onClick={() =>
                               setCelanaBatchStocks((prev) => ({
                                 ...prev,
-                                [size]: Math.max(0, (prev[size] || 0) - 1),
+                                [size]: Math.max(minAllowedQty, (prev[size] || 0) - 1),
                               }))
                             }
-                            className="px-1.5 py-0.5 text-[10px] font-bold bg-white border border-slate-200 rounded hover:bg-slate-100 text-slate-700 cursor-pointer"
+                            className="px-1.5 py-0.5 text-[10px] font-bold bg-white border border-slate-200 rounded hover:bg-slate-100 text-slate-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                            title={!canReduceStockAccess ? 'Terkunci: Butuh izin Pengurangan Stok' : 'Kurangi 1'}
                           >
                             -1
                           </button>
@@ -1105,16 +1268,16 @@ export const ProductStockView: React.FC<ProductStockViewProps> = ({ onNavigate }
 
                         <input
                           type="number"
-                          min="0"
+                          min={minAllowedQty}
                           required
                           value={currentQty}
                           onChange={(e) =>
                             setCelanaBatchStocks((prev) => ({
                               ...prev,
-                              [size]: Math.max(0, Number(e.target.value)),
+                              [size]: Math.max(minAllowedQty, Number(e.target.value)),
                             }))
                           }
-                          className="w-16 px-2 py-1 text-center font-black text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                          className="w-16 px-2 py-1 text-center font-black text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:outline-none tabular-nums"
                         />
 
                         <div className="flex items-center gap-1">
@@ -1517,15 +1680,27 @@ export const ProductStockView: React.FC<ProductStockViewProps> = ({ onNavigate }
 
                   <button
                     type="button"
-                    onClick={() => setAdjustmentData({ ...adjustmentData, movementType: 'OUT' })}
-                    className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all cursor-pointer ${
-                      adjustmentData.movementType === 'OUT'
-                        ? 'bg-rose-50 border-rose-500 text-rose-800'
-                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                    disabled={!canReduceStockAccess}
+                    onClick={() => {
+                      if (canReduceStockAccess) {
+                        setAdjustmentData({ ...adjustmentData, movementType: 'OUT' });
+                      }
+                    }}
+                    title={!canReduceStockAccess ? 'Terkunci: Memerlukan izin Pengurangan & Koreksi Stok Obat' : 'Barang Keluar / Pengurangan Stok'}
+                    className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all ${
+                      !canReduceStockAccess
+                        ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed opacity-70'
+                        : adjustmentData.movementType === 'OUT'
+                        ? 'bg-rose-50 border-rose-500 text-rose-800 cursor-pointer'
+                        : 'border-slate-200 text-slate-600 hover:bg-slate-50 cursor-pointer'
                     }`}
                   >
-                    <ArrowUpRight className="w-4 h-4 text-rose-600" />
-                    <span>Barang Keluar</span>
+                    {canReduceStockAccess ? (
+                      <ArrowUpRight className="w-4 h-4 text-rose-600" />
+                    ) : (
+                      <Lock className="w-4 h-4 text-slate-400" />
+                    )}
+                    <span>{canReduceStockAccess ? 'Barang Keluar' : 'Keluar (Terkunci)'}</span>
                   </button>
 
                   <button
@@ -1541,6 +1716,12 @@ export const ProductStockView: React.FC<ProductStockViewProps> = ({ onNavigate }
                     <span>Opname Fisik</span>
                   </button>
                 </div>
+                {!canReduceStockAccess && (
+                  <p className="text-[11px] text-amber-700 font-medium mt-2 flex items-center gap-1.5 bg-amber-50 border border-amber-200 px-2.5 py-1.5 rounded-lg">
+                    <Lock className="w-3.5 h-3.5 shrink-0" />
+                    <span>Pengurangan stok terkunci. Anda hanya dapat menambah stok ({'≥'} {adjustingProduct.stock} {adjustingProduct.unit}).</span>
+                  </p>
+                )}
               </div>
 
               <div>
@@ -1552,11 +1733,17 @@ export const ProductStockView: React.FC<ProductStockViewProps> = ({ onNavigate }
                 <input
                   id="input-mutation-qty"
                   type="number"
-                  min="1"
+                  min={
+                    adjustmentData.movementType === 'ADJUSTMENT'
+                      ? canReduceStockAccess
+                        ? 0
+                        : adjustingProduct.stock
+                      : 1
+                  }
                   required
                   value={adjustmentData.quantity}
                   onChange={(e) => setAdjustmentData({ ...adjustmentData, quantity: Number(e.target.value) })}
-                  className="w-full px-3.5 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  className="w-full px-3.5 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 tabular-nums"
                 />
               </div>
 
@@ -1591,6 +1778,239 @@ export const ProductStockView: React.FC<ProductStockViewProps> = ({ onNavigate }
                   Konfirmasi Mutasi Stok
                 </button>
               </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Tambah Stok Obat Cepat (Restock) */}
+      {isQuickRestockModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fadeIn">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-emerald-50/70">
+              <h3 className="font-black text-base text-emerald-950 flex items-center gap-2">
+                <Boxes className="w-5 h-5 text-emerald-700" />
+                Tambah Stok Obat / Barang Masuk
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsQuickRestockModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleQuickRestockSubmit} className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Pilih Obat / Produk <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  value={quickRestockData.productId}
+                  onChange={(e) => setQuickRestockData({ ...quickRestockData, productId: e.target.value })}
+                  required
+                  className="w-full px-3.5 py-2 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                >
+                  <option value="">-- Pilih Produk --</option>
+                  {products.map((p) => (
+                    <option key={`restock-opt-${p.id}`} value={p.id}>
+                      [{p.category}] {p.name} (Stok: {p.stock} {p.unit})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Jumlah Tambah Stok Masuk <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  required
+                  value={quickRestockData.quantity}
+                  onChange={(e) => setQuickRestockData({ ...quickRestockData, quantity: Number(e.target.value) })}
+                  className="w-full px-3.5 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 tabular-nums"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Catatan Penerimaan <span className="text-rose-500">*</span>
+                </label>
+                <textarea
+                  rows={2}
+                  required
+                  value={quickRestockData.notes}
+                  onChange={(e) => setQuickRestockData({ ...quickRestockData, notes: e.target.value })}
+                  placeholder="Contoh: Pembelian batch baru dari apotek/supplier"
+                  className="w-full px-3.5 py-2 border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-200 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsQuickRestockModalOpen(false)}
+                  className="px-4 py-2 border border-slate-300 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-50 cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingQuickRestock}
+                  className="px-5 py-2 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+                >
+                  {isSubmittingQuickRestock ? 'Menyimpan...' : 'Simpan Stok Masuk'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Kurangi Stok Obat (Khusus Pengguna Yang Diberi Akses) */}
+      {isQuickReduceModalOpen && canReduceStockAccess && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fadeIn">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-rose-50/80">
+              <div>
+                <h3 className="font-black text-base text-rose-950 flex items-center gap-2">
+                  <MinusCircle className="w-5 h-5 text-rose-600" />
+                  Pengurangan Stok Obat & Produk
+                </h3>
+                <p className="text-[11px] font-semibold text-rose-700 mt-0.5">
+                  Akses Terproteksi • Tercatat di Audit Trail
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsQuickReduceModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleQuickReduceSubmit} className="p-6 space-y-4">
+              {(() => {
+                const selectedProd = products.find((p) => String(p.id) === String(quickReduceData.productId));
+                const currentStock = selectedProd?.stock ?? 0;
+                const reduceQty = Number(quickReduceData.quantity || 0);
+                const afterStock = currentStock - reduceQty;
+                const isOverStock = reduceQty > currentStock;
+
+                return (
+                  <>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        Pilih Obat / Produk yang Dikurangi <span className="text-rose-500">*</span>
+                      </label>
+                      <select
+                        id="select-reduce-product"
+                        value={quickReduceData.productId}
+                        onChange={(e) => setQuickReduceData({ ...quickReduceData, productId: e.target.value })}
+                        required
+                        className="w-full px-3.5 py-2 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                      >
+                        <option value="">-- Pilih Produk --</option>
+                        {products.map((p) => (
+                          <option key={`reduce-opt-${p.id}`} value={p.id} disabled={p.stock <= 0}>
+                            [{p.category}] {p.name} (Stok: {p.stock} {p.unit})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {selectedProd && (
+                      <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 grid grid-cols-2 gap-3 text-xs">
+                        <div>
+                          <p className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Stok Saat Ini</p>
+                          <p className="font-black text-lg text-slate-900 tabular-nums">
+                            {currentStock} {selectedProd.unit}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Sisa Setelah Dikurangi</p>
+                          <p className={`font-black text-lg tabular-nums ${isOverStock ? 'text-rose-600' : afterStock <= selectedProd.minStock ? 'text-amber-600' : 'text-emerald-700'}`}>
+                            {isOverStock ? 'Melebihi Stok!' : `${afterStock} ${selectedProd.unit}`}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">
+                          Jumlah Pengurangan <span className="text-rose-500">*</span>
+                        </label>
+                        <input
+                          id="input-reduce-qty"
+                          type="number"
+                          min={1}
+                          max={Math.max(1, currentStock)}
+                          required
+                          value={quickReduceData.quantity}
+                          onChange={(e) => setQuickReduceData({ ...quickReduceData, quantity: Number(e.target.value) })}
+                          className="w-full px-3.5 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500 tabular-nums"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">
+                          Kategori Alasan <span className="text-rose-500">*</span>
+                        </label>
+                        <select
+                          id="select-reduce-reason"
+                          value={quickReduceData.reasonType}
+                          onChange={(e) => setQuickReduceData({ ...quickReduceData, reasonType: e.target.value as any })}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                        >
+                          <option value="EXPIRED">Obat Kadaluwarsa</option>
+                          <option value="DAMAGED">Rusak / Pecah / Bocor</option>
+                          <option value="INTERNAL_USE">Pemakaian Internal / Non-Pasien</option>
+                          <option value="OPNAME_MINUS">Selisih Opname Fisik (Kurang)</option>
+                          <option value="OTHER">Alasan Lainnya</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        Keterangan / Alasan Rinci (Wajib) <span className="text-rose-500">*</span>
+                      </label>
+                      <textarea
+                        id="input-reduce-notes"
+                        rows={2}
+                        required
+                        value={quickReduceData.notes}
+                        onChange={(e) => setQuickReduceData({ ...quickReduceData, notes: e.target.value })}
+                        placeholder="Contoh: 2 botol sirup kadaluwarsa batch Nov 2026 dimusnahkan"
+                        className="w-full px-3.5 py-2 border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                      />
+                    </div>
+
+                    <div className="pt-3 border-t border-slate-200 flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsQuickReduceModalOpen(false)}
+                        className="px-4 py-2 border border-slate-300 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-50 cursor-pointer"
+                      >
+                        Batal
+                      </button>
+                      <button
+                        id="btn-submit-reduce-stock"
+                        type="submit"
+                        disabled={isSubmittingQuickReduce || !selectedProd || currentStock <= 0 || isOverStock}
+                        className="px-5 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+                      >
+                        {isSubmittingQuickReduce ? 'Memproses...' : 'Konfirmasi Pengurangan Stok'}
+                      </button>
+                    </div>
+                  </>
+                );
+              })()}
             </form>
           </div>
         </div>
@@ -1660,8 +2080,8 @@ export const ProductStockView: React.FC<ProductStockViewProps> = ({ onNavigate }
                               {m.movementType}
                             </span>
                           </td>
-                          <td className="py-2.5 px-3 text-right font-black">
-                            {m.movementType === 'IN' ? `+${m.quantity}` : `-${m.quantity}`}
+                          <td className="py-2.5 px-3 text-right font-black tabular-nums">
+                            {m.quantity > 0 ? `+${m.quantity}` : m.quantity < 0 ? `${m.quantity}` : '0'}
                           </td>
                           <td className="py-2.5 px-3 text-right font-bold text-slate-900">{m.currentStock}</td>
                           <td className="py-2.5 px-3 text-slate-500">{m.performedBy || 'Staff'}</td>
